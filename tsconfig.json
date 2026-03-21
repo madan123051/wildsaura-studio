@@ -1,32 +1,21 @@
 {
   "compilerOptions": {
-    "target": "es2020",
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "noEmit": true,
-    "strict": false,
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
     "skipLibCheck": true,
-    "baseUrl": ".",
-    "paths": {
-      "*": [
-        "/tmp/tasklet-deps/wildsaura-studio-bffb4039abf6/node_modules/*"
-      ]
-    },
-    "typeRoots": [
-      "/tmp/tasklet-deps/wildsaura-studio-bffb4039abf6/node_modules/@types"
-    ],
-    "types": [
-      "react",
-      "react-dom"
-    ]
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true
   },
-  "include": [
-    "./**/*.tsx",
-    "./**/*.ts",
-    "./**/*.d.ts"
-  ],
-  "exclude": [
-    "node_modules"
-  ]
+  "include": ["**/*.ts", "**/*.tsx"]
 }
