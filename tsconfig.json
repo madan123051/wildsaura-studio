@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "*": [
+        "/tmp/tasklet-deps/wildsaura-studio-bffb4039abf6/node_modules/*"
+      ]
+    },
+    "typeRoots": [
+      "/tmp/tasklet-deps/wildsaura-studio-bffb4039abf6/node_modules/@types"
+    ],
+    "types": [
+      "react",
+      "react-dom"
+    ]
+  },
+  "include": [
+    "./**/*.tsx",
+    "./**/*.ts",
+    "./**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
