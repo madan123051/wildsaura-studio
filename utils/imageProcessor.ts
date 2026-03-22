@@ -317,3 +317,49 @@ export function generatePreview(
 
   return canvas.toDataURL('image/jpeg', 0.85);
 }
+
+/**
+ * Apply a 3D LUT stored as a flat Float32Array to entire image data.
+ * Values in lutData are in 0..1 range. Trilinear interpolation is used.
+ */
+export function applyLUT(
+  data: Uint8ClampedArray,
+  lutData: Float32Array,
+  lutSize: number,
+  intensity: number
+): void {
+  const s = lutSize - 1;
+  const n = lutSize;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const rf = (r / 255) * s;
+    const gf = (g / 255) * s;
+    const bf = (b / 255) * s;
+    const r0 = Math.floor(rf), r1 = Math.min(r0 + 1, s);
+    const g0 = Math.floor(gf), g1 = Math.min(g0 + 1, s);
+    const b0 = Math.floor(bf), b1 = Math.min(b0 + 1, s);
+    const rd = rf - r0, gd = gf - g0, bd = bf - b0;
+
+    const idx000 = (b0 * n * n + g0 * n + r0) * 3;
+    const idx100 = (b0 * n * n + g0 * n + r1) * 3;
+    const idx010 = (b0 * n * n + g1 * n + r0) * 3;
+    const idx110 = (b0 * n * n + g1 * n + r1) * 3;
+    const idx001 = (b1 * n * n + g0 * n + r0) * 3;
+    const idx101 = (b1 * n * n + g0 * n + r1) * 3;
+    const idx011 = (b1 * n * n + g1 * n + r0) * 3;
+    const idx111 = (b1 * n * n + g1 * n + r1) * 3;
+
+    for (let ch = 0; ch < 3; ch++) {
+      const c00 = lutData[idx000 + ch] * (1 - rd) + lutData[idx100 + ch] * rd;
+      const c01 = lutData[idx001 + ch] * (1 - rd) + lutData[idx101 + ch] * rd;
+      const c10 = lutData[idx010 + ch] * (1 - rd) + lutData[idx110 + ch] * rd;
+      const c11 = lutData[idx011 + ch] * (1 - rd) + lutData[idx111 + ch] * rd;
+      const c0 = c00 * (1 - gd) + c10 * gd;
+      const c1 = c01 * (1 - gd) + c11 * gd;
+      const val = (c0 * (1 - bd) + c1 * bd) * 255;
+      const orig = data[i + ch];
+      const result = orig + (val - orig) * intensity;
+      data[i + ch] = result < 0 ? 0 : result > 255 ? 255 : Math.round(result);
+    }
+  }
+}

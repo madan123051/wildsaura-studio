@@ -442,12 +442,14 @@ const WildSauraApp: React.FC = () => {
             userId: user.uid,
             fileName: outName,
             originalSize: file.originalSize,
-            convertedSize: blob.size,
-            lutName: activeLut?.name || 'None',
+            processedSize: blob.size,
+            preset: activeLut?.name || 'None',
             intensity,
             quality: settings.quality,
             width: w,
             height: h,
+            savedPercentage: Math.round((1 - blob.size / file.originalSize) * 100),
+            createdAt: Date.now(),
           });
         } catch (e) {
           // Silent fail for cloud save
