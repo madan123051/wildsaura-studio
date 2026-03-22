@@ -1,516 +1,922 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Download, Trash2, Settings, ChevronDown, ChevronUp, RotateCcw, Plus } from 'lucide-react';
-import { ImageFile, ActiveLUT, ConversionSettings, LUTPreset, CubeLUT } from './types';
-import { LUT_PRESETS } from './utils/lutData';
-import {
-  loadImage,
-  processImageToCanvas,
-  canvasToWebPBlob,
-  generatePreview,
-} from './utils/imageProcessor';
-import { DropZone } from './components/DropZone';
-import { LUTPanel } from './components/LUTPanel';
-import { ImagePreview } from './components/ImagePreview';
-import { ConversionSettingsPanel } from './components/ConversionSettings';
-import { FileList } from './components/FileList';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { ToastProvider, useToast } from './components/Toast';
+import { saveConversion, getUserStats } from './lib/database';
+import { uploadThumbnail } from './lib/storage';
+import Auth from './components/Auth';
+import Dashboard from './components/Dashboard';
+import DropZone from './components/DropZone';
+import FileList, { formatSize } from './components/FileList';
+import type { FileItem } from './components/FileList';
+import ImagePreview from './components/ImagePreview';
+import LUTPanel from './components/LUTPanel';
+import type { LUTPreset } from './components/LUTPanel';
+import ConversionSettings from './components/ConversionSettings';
+import type { ConversionSettingsData } from './components/ConversionSettings';
+import { applyLUT } from './utils/imageProcessor';
+import { BUILT_IN_LUTS } from './utils/lutData';
 import './styles.css';
 
 declare const JSZip: any;
 
-const App: React.FC<{}> = () => {
-  const [files, setFiles] = useState<ImageFile[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [activeLut, setActiveLut] = useState<ActiveLUT>(null);
-  const [intensity, setIntensity] = useState(0.75);
-  const [settings, setSettings] = useState<ConversionSettings>({
-    quality: 82,
-    lossless: false,
-    resizeTo4K: false,
-    preserveMetadata: true,
-    autoConvert: false,
-    smartNaming: true,
+// ─── Helpers ──────────────────────────────────────────────
+
+const generateId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+const createThumbnailUrl = (file: File): Promise<string> =>
+  new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(file);
   });
+
+const loadImage = (src: string): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+
+const fileToDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(file);
+  });
+
+// ─── User Menu Component ──────────────────────────────────
+
+const UserMenu: React.FC<{
+  user: any;
+  onSignOut: () => void;
+  onNavigate: (tab: string) => void;
+}> = ({ user, onSignOut, onNavigate }) => {
+  const [open, setOpen] = useState(false);
+
+  if (!user) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Guest</span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          padding: '4px 10px', borderRadius: 8,
+          background: open ? 'rgba(255,255,255,0.06)' : 'transparent',
+          border: '1px solid transparent',
+          cursor: 'pointer', transition: 'all 0.15s',
+          color: 'var(--text-secondary)',
+        }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+        onMouseLeave={e => { if (!open) e.currentTarget.style.background = 'transparent'; }}
+      >
+        {user.photoURL ? (
+          <img src={user.photoURL} alt="" style={{ width: 22, height: 22, borderRadius: '50%' }} />
+        ) : (
+          <div style={{
+            width: 22, height: 22, borderRadius: '50%',
+            background: 'linear-gradient(135deg, var(--accent), var(--accent-secondary))',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 10, fontWeight: 700, color: '#fff',
+          }}>
+            {(user.displayName || user.email || '?')[0].toUpperCase()}
+          </div>
+        )}
+        <span style={{ fontSize: 11, fontWeight: 500, maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {user.displayName || user.email?.split('@')[0] || 'User'}
+        </span>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {open && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 199 }}
+            onClick={() => setOpen(false)}
+          />
+          <div style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            width: 180, padding: 4, borderRadius: 10,
+            background: 'var(--bg-panel)',
+            border: '1px solid var(--border)',
+            boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
+            zIndex: 200,
+          }}>
+            <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)' }}>
+                {user.displayName || 'User'}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {user.email}
+              </div>
+            </div>
+            {[
+              { label: '📊 Dashboard', action: () => { onNavigate('catalog'); setOpen(false); } },
+              { label: '🚪 Sign Out', action: () => { onSignOut(); setOpen(false); } },
+            ].map((item, i) => (
+              <button key={i} onClick={item.action} style={{
+                display: 'block', width: '100%', padding: '8px 10px', borderRadius: 6,
+                background: 'transparent', border: 'none',
+                fontSize: 11, color: 'var(--text-secondary)',
+                cursor: 'pointer', textAlign: 'left',
+                transition: 'background 0.15s',
+              }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >{item.label}</button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ─── Mobile File Drawer ───────────────────────────────────
+
+const MobileFileDrawer: React.FC<{
+  open: boolean;
+  onClose: () => void;
+  files: FileItem[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onRemove: (id: string) => void;
+  onDownloadSingle: (file: FileItem) => void;
+  onFilesAdded: (files: File[]) => void;
+}> = ({ open, onClose, files, selectedId, onSelect, onRemove, onDownloadSingle, onFilesAdded }) => {
+  if (!open) return null;
+  return (
+    <>
+      <div className="mobile-overlay" onClick={onClose} />
+      <aside className="file-sidebar mobile-open" style={{
+        width: 260, background: 'var(--bg-secondary)',
+        borderRight: '1px solid var(--border)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        <div style={{
+          padding: '10px 10px 6px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        }}>
+          <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--text-muted)' }}>
+            Files ({files.length})
+          </span>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <DropZone onFilesAdded={onFilesAdded} compact />
+            <button onClick={onClose} style={{
+              width: 24, height: 24, borderRadius: 6, border: 'none',
+              background: 'rgba(255,255,255,0.05)', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 6 }}>
+          <FileList
+            files={files} selectedId={selectedId}
+            onSelect={(id) => { onSelect(id); onClose(); }}
+            onRemove={onRemove} onDownloadSingle={onDownloadSingle}
+          />
+        </div>
+      </aside>
+    </>
+  );
+};
+
+// ─── Main App Component ───────────────────────────────────
+
+const WildSauraApp: React.FC = () => {
+  const { user, loading: authLoading, signOut } = useAuth();
+  const { showToast } = useToast();
+
+  // ── UI State ──
+  const [activeTab, setActiveTab] = useState<'catalog' | 'presets' | 'edit'>('edit');
+  const [guestMode, setGuestMode] = useState(false);
+  const [showAuth, setShowAuth] = useState(true);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  // ── File State ──
+  const [files, setFiles] = useState<FileItem[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // ── LUT State ──
+  const [presets, setPresets] = useState<LUTPreset[]>(() =>
+    BUILT_IN_LUTS.map((lut: any) => ({
+      id: lut.id || lut.name.toLowerCase().replace(/\s+/g, '_'),
+      name: lut.name,
+      data: lut.data,
+      size: lut.size,
+    }))
+  );
+  const [activeLutId, setActiveLutId] = useState<string | null>(null);
+  const [intensity, setIntensity] = useState(100);
+
+  // ── Settings ──
+  const [settings, setSettings] = useState<ConversionSettingsData>({
+    quality: 82,
+    resize4k: false,
+    lossless: false,
+    smartName: true,
+    keepExif: true,
+    autoConvert: false,
+  });
+
+  // ── Processing State ──
+  const [isProcessingAll, setIsProcessingAll] = useState(false);
   const [previewOriginal, setPreviewOriginal] = useState<string | null>(null);
   const [previewProcessed, setPreviewProcessed] = useState<string | null>(null);
-  const [isProcessingAll, setIsProcessingAll] = useState(false);
-  const [showSettings, setShowSettings] = useState(true);
+
+  // ── Refs ──
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
-  const previewTimerRef = useRef<number | null>(null);
+  const processingRef = useRef(false);
 
-  const prevLutRef = useRef<ActiveLUT>(null);
-  const prevIntensityRef = useRef<number>(0.75);
-
-  const selectedFile = files.find(f => f.id === selectedId) || null;
-
-  const getActivePreset = useCallback((): LUTPreset | null => {
-    if (activeLut?.type === 'preset') {
-      return LUT_PRESETS.find(p => p.id === activeLut.presetId) || null;
-    }
-    return null;
-  }, [activeLut]);
-
-  const getActiveCube = useCallback((): CubeLUT | null => {
-    if (activeLut?.type === 'cube') return activeLut.lut;
-    return null;
-  }, [activeLut]);
-
-  // When LUT or intensity changes, reset all files to pending for re-processing
+  // ── Responsive handler ──
   useEffect(() => {
-    const lutChanged = activeLut !== prevLutRef.current;
-    const intensityChanged = intensity !== prevIntensityRef.current;
-    prevLutRef.current = activeLut;
-    prevIntensityRef.current = intensity;
-    if ((lutChanged || intensityChanged) && files.length > 0) {
-      setFiles(prev => prev.map(f => ({
-        ...f, status: 'pending' as const,
-        processedUrl: null, processedBlob: null, sizeAfter: null,
-      })));
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // ── Selected file ──
+  const selectedFile = useMemo(
+    () => files.find((f) => f.id === selectedId) || null,
+    [files, selectedId]
+  );
+
+  // ── Active LUT data ──
+  const activeLut = useMemo(
+    () => presets.find((p) => p.id === activeLutId) || null,
+    [presets, activeLutId]
+  );
+
+  // ── File stats ──
+  const fileStats = useMemo(() => {
+    const total = files.length;
+    const done = files.filter((f) => f.status === 'done').length;
+    const pending = files.filter((f) => f.status === 'pending').length;
+    const totalBefore = files.reduce((sum, f) => sum + f.originalSize, 0);
+    const totalAfter = files.filter((f) => f.convertedSize).reduce((sum, f) => sum + (f.convertedSize || 0), 0);
+    return { total, done, pending, totalBefore, totalAfter };
+  }, [files]);
+
+  // ── Generate preview for selected file ──
+  const generatePreview = useCallback(async (file: FileItem) => {
+    try {
+      const dataUrl = await fileToDataUrl(file.file);
+      setPreviewOriginal(dataUrl);
+
+      if (file.status === 'done' && file.convertedBlob) {
+        const url = URL.createObjectURL(file.convertedBlob);
+        setPreviewProcessed(url);
+      } else if (activeLut && activeLut.data) {
+        // Generate a live preview with the current LUT
+        let img = imageCache.current.get(file.id);
+        if (!img) {
+          img = await loadImage(dataUrl);
+          imageCache.current.set(file.id, img);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.min(img.width, 800);
+        canvas.height = Math.min(img.height, Math.round(img.height * (canvas.width / img.width)));
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        applyLUT(imageData.data, activeLut.data, activeLut.size, intensity / 100);
+        ctx.putImageData(imageData, 0, 0);
+
+        const previewUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPreviewProcessed(previewUrl);
+      } else {
+        setPreviewProcessed(null);
+      }
+    } catch (err) {
+      console.error('Preview generation error:', err);
     }
   }, [activeLut, intensity]);
 
-  // Update preview
+  // ── Update preview when selection or LUT changes ──
   useEffect(() => {
-    if (!selectedFile) {
+    if (selectedFile) {
+      generatePreview(selectedFile);
+    } else {
       setPreviewOriginal(null);
       setPreviewProcessed(null);
-      return;
     }
-    setPreviewOriginal(selectedFile.originalUrl);
-    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
-    const preset = getActivePreset();
-    const cube = getActiveCube();
-    if (!preset && !cube) {
-      setPreviewProcessed(null);
-      return;
-    }
-    previewTimerRef.current = window.setTimeout(async () => {
-      let img = imageCache.current.get(selectedFile.id);
-      if (!img) {
-        img = await loadImage(selectedFile.file);
-        imageCache.current.set(selectedFile.id, img);
-      }
-      const url = generatePreview(img, preset, cube, intensity);
-      setPreviewProcessed(url);
-    }, 150);
-    return () => { if (previewTimerRef.current) clearTimeout(previewTimerRef.current); };
-  }, [selectedId, activeLut, intensity, files, getActivePreset, getActiveCube, selectedFile]);
+  }, [selectedFile, activeLutId, intensity, generatePreview]);
 
-  // Add files
+  // ── Handle files added ──
   const handleFilesAdded = useCallback(async (newFiles: File[]) => {
-    const imageFiles: ImageFile[] = [];
-    for (const file of newFiles) {
-      const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const url = URL.createObjectURL(file);
-      const img = await loadImage(file);
-      imageCache.current.set(id, img);
-      imageFiles.push({
-        id, file, name: file.name, originalUrl: url,
-        processedUrl: null, processedBlob: null,
-        width: img.naturalWidth, height: img.naturalHeight,
-        status: 'pending', sizeBefore: file.size, sizeAfter: null,
+    const items: FileItem[] = await Promise.all(
+      newFiles.map(async (file) => {
+        const id = generateId();
+        const thumbnailUrl = await createThumbnailUrl(file);
+        // Get dimensions
+        let width = 0, height = 0;
+        try {
+          const img = await loadImage(thumbnailUrl);
+          width = img.naturalWidth;
+          height = img.naturalHeight;
+          imageCache.current.set(id, img);
+        } catch {}
+
+        return {
+          id,
+          file,
+          name: file.name,
+          status: 'pending' as const,
+          originalSize: file.size,
+          width,
+          height,
+          thumbnailUrl,
+        };
+      })
+    );
+
+    setFiles((prev) => {
+      const updated = [...prev, ...items];
+      // Auto-select first if none selected
+      if (!selectedId && updated.length > 0) {
+        setSelectedId(items[0].id);
+      }
+      return updated;
+    });
+
+    showToast(`Added ${items.length} file${items.length > 1 ? 's' : ''}`, 'success');
+
+    // Auto-convert if enabled
+    if (settings.autoConvert) {
+      setTimeout(() => {
+        items.forEach((item) => processFile(item.id));
+      }, 100);
+    }
+  }, [selectedId, settings.autoConvert, showToast]);
+
+  // ── Process single file ──
+  const processFile = useCallback(async (fileId: string) => {
+    setFiles((prev) => prev.map((f) => f.id === fileId ? { ...f, status: 'processing' as const } : f));
+
+    try {
+      const file = files.find((f) => f.id === fileId);
+      if (!file) throw new Error('File not found');
+
+      // Load image
+      let img = imageCache.current.get(fileId);
+      if (!img) {
+        const dataUrl = await fileToDataUrl(file.file);
+        img = await loadImage(dataUrl);
+        imageCache.current.set(fileId, img);
+      }
+
+      // Create canvas
+      let w = img.naturalWidth;
+      let h = img.naturalHeight;
+      if (settings.resize4k && w > 3840) {
+        const scale = 3840 / w;
+        w = 3840;
+        h = Math.round(h * scale);
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, 0, 0, w, h);
+
+      // Apply LUT if active
+      if (activeLut && activeLut.data) {
+        const imageData = ctx.getImageData(0, 0, w, h);
+        applyLUT(imageData.data, activeLut.data, activeLut.size, intensity / 100);
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      // Convert to WebP
+      const blob: Blob = await new Promise((resolve, reject) => {
+        if (settings.lossless) {
+          canvas.toBlob(
+            (b) => (b ? resolve(b) : reject(new Error('Blob creation failed'))),
+            'image/webp',
+            1.0
+          );
+        } else {
+          canvas.toBlob(
+            (b) => (b ? resolve(b) : reject(new Error('Blob creation failed'))),
+            'image/webp',
+            settings.quality / 100
+          );
+        }
+      });
+
+      // Generate output name
+      let outName = file.name.replace(/\.[^.]+$/, '');
+      if (settings.smartName && activeLut) {
+        outName += `_${activeLut.name.replace(/\s+/g, '-').toLowerCase()}`;
+      }
+      outName += '.webp';
+
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId
+            ? { ...f, status: 'done' as const, convertedBlob: blob, convertedSize: blob.size }
+            : f
+        )
+      );
+
+      // Save to Firebase if logged in
+      if (user) {
+        try {
+          await saveConversion({
+            userId: user.uid,
+            fileName: outName,
+            originalSize: file.originalSize,
+            convertedSize: blob.size,
+            lutName: activeLut?.name || 'None',
+            intensity,
+            quality: settings.quality,
+            width: w,
+            height: h,
+          });
+        } catch (e) {
+          // Silent fail for cloud save
+          console.warn('Cloud save failed:', e);
+        }
+      }
+
+      showToast(`Converted: ${outName}`, 'success');
+    } catch (err: any) {
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === fileId
+            ? { ...f, status: 'error' as const, error: err.message || 'Conversion failed' }
+            : f
+        )
+      );
+      showToast(`Error: ${err.message || 'Conversion failed'}`, 'error');
+    }
+  }, [files, activeLut, intensity, settings, user, showToast]);
+
+  // ── Process all pending ──
+  const processAll = useCallback(async () => {
+    if (processingRef.current) return;
+    processingRef.current = true;
+    setIsProcessingAll(true);
+
+    const pending = files.filter((f) => f.status === 'pending' || f.status === 'error');
+    for (const file of pending) {
+      await processFile(file.id);
+    }
+
+    processingRef.current = false;
+    setIsProcessingAll(false);
+    showToast(`Batch complete! ${pending.length} files processed`, 'success');
+  }, [files, processFile, showToast]);
+
+  // ── Download single file ──
+  const downloadSingle = useCallback((file: FileItem) => {
+    if (!file.convertedBlob) return;
+    const url = URL.createObjectURL(file.convertedBlob);
+    const a = document.createElement('a');
+    let outName = file.name.replace(/\.[^.]+$/, '');
+    if (settings.smartName && activeLut) {
+      outName += `_${activeLut.name.replace(/\s+/g, '-').toLowerCase()}`;
+    }
+    outName += '.webp';
+    a.href = url;
+    a.download = outName;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [settings.smartName, activeLut]);
+
+  // ── Download all as zip ──
+  const downloadAllZip = useCallback(async () => {
+    const doneFiles = files.filter((f) => f.status === 'done' && f.convertedBlob);
+    if (doneFiles.length === 0) return;
+
+    showToast('Creating zip file…', 'info');
+    const zip = new JSZip();
+
+    for (const file of doneFiles) {
+      let outName = file.name.replace(/\.[^.]+$/, '');
+      if (settings.smartName && activeLut) {
+        outName += `_${activeLut.name.replace(/\s+/g, '-').toLowerCase()}`;
+      }
+      outName += '.webp';
+      zip.file(outName, file.convertedBlob!);
+    }
+
+    const blob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `wildsaura_export_${Date.now()}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Downloaded ${doneFiles.length} files as zip`, 'success');
+  }, [files, settings.smartName, activeLut, showToast]);
+
+  // ── Remove file ──
+  const removeFile = useCallback((id: string) => {
+    setFiles((prev) => prev.filter((f) => f.id !== id));
+    if (selectedId === id) {
+      setSelectedId((prev) => {
+        const remaining = files.filter((f) => f.id !== id);
+        return remaining.length > 0 ? remaining[0].id : null;
       });
     }
-    setFiles(prev => [...prev, ...imageFiles]);
-    if (!selectedId && imageFiles.length > 0) setSelectedId(imageFiles[0].id);
-  }, [selectedId]);
-
-  // Process single file
-  const processFile = useCallback(async (fileId: string) => {
-    const file = files.find(f => f.id === fileId);
-    if (!file) return;
-    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'processing' } : f));
-    try {
-      let img = imageCache.current.get(fileId);
-      if (!img) { img = await loadImage(file.file); imageCache.current.set(fileId, img); }
-      const preset = getActivePreset();
-      const cube = getActiveCube();
-      const canvas = processImageToCanvas(img, preset, cube, intensity, settings.resizeTo4K);
-      const blob = await canvasToWebPBlob(canvas, settings.quality / 100, settings.lossless, file.sizeBefore);
-      const processedUrl = URL.createObjectURL(blob);
-      setFiles(prev => prev.map(f => f.id === fileId ? {
-        ...f, status: 'done', processedUrl, processedBlob: blob, sizeAfter: blob.size,
-      } : f));
-    } catch (err) {
-      console.error('Processing failed:', err);
-      setFiles(prev => prev.map(f => f.id === fileId ? { ...f, status: 'error' } : f));
-    }
-  }, [files, getActivePreset, getActiveCube, intensity, settings]);
-
-  // Process all pending files
-  const processAll = useCallback(async () => {
-    setIsProcessingAll(true);
-    const preset = getActivePreset();
-    const cube = getActiveCube();
-    for (const file of files) {
-      if (file.status === 'done') continue;
-      setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'processing' } : f));
-      try {
-        let img = imageCache.current.get(file.id);
-        if (!img) { img = await loadImage(file.file); imageCache.current.set(file.id, img); }
-        const canvas = processImageToCanvas(img, preset, cube, intensity, settings.resizeTo4K);
-        const blob = await canvasToWebPBlob(canvas, settings.quality / 100, settings.lossless, file.sizeBefore);
-        const processedUrl = URL.createObjectURL(blob);
-        setFiles(prev => prev.map(f => f.id === file.id ? {
-          ...f, status: 'done', processedUrl, processedBlob: blob, sizeAfter: blob.size,
-        } : f));
-      } catch (err) {
-        console.error('Processing failed for', file.name, err);
-        setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error' } : f));
-      }
-    }
-    setIsProcessingAll(false);
-  }, [files, getActivePreset, getActiveCube, intensity, settings]);
-
-  // Auto-convert
-  useEffect(() => {
-    if (settings.autoConvert && files.some(f => f.status === 'pending') && !isProcessingAll) {
-      processAll();
-    }
-  }, [files, settings.autoConvert, isProcessingAll, processAll]);
-
-  // ═══ RESET — keep files but clear all processed data ═══
-  const resetAll = useCallback(() => {
-    setFiles(prev => prev.map(f => {
-      if (f.processedUrl) URL.revokeObjectURL(f.processedUrl);
-      return {
-        ...f,
-        status: 'pending' as const,
-        processedUrl: null,
-        processedBlob: null,
-        sizeAfter: null,
-      };
-    }));
-    setPreviewProcessed(null);
-  }, []);
-
-  // Downloads
-  const downloadSingle = useCallback((file: ImageFile) => {
-    if (!file.processedBlob) return;
-    const baseName = file.name.replace(/\.[^.]+$/, '');
-    const lutName = activeLut?.type === 'preset'
-      ? LUT_PRESETS.find(p => p.id === activeLut.presetId)?.name.replace(/\s/g, '') || 'Graded'
-      : activeLut?.type === 'cube' ? activeLut.name.replace(/\.[^.]+$/, '').replace(/\s/g, '') : 'Converted';
-    const fileName = settings.smartNaming ? `${baseName}_WildSaura_${lutName}.webp` : `${baseName}.webp`;
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(file.processedBlob);
-    a.download = fileName;
-    a.click();
-  }, [activeLut, settings.smartNaming]);
-
-  const downloadAllZip = useCallback(async () => {
-    const doneFiles = files.filter(f => f.status === 'done' && f.processedBlob);
-    if (doneFiles.length === 0) return;
-    const zip = new JSZip();
-    const lutName = activeLut?.type === 'preset'
-      ? LUT_PRESETS.find(p => p.id === activeLut.presetId)?.name.replace(/\s/g, '') || 'Graded'
-      : activeLut?.type === 'cube' ? activeLut.name.replace(/\.[^.]+$/, '').replace(/\s/g, '') : 'Converted';
-    for (const file of doneFiles) {
-      const baseName = file.name.replace(/\.[^.]+$/, '');
-      const fileName = settings.smartNaming ? `${baseName}_WildSaura_${lutName}.webp` : `${baseName}.webp`;
-      zip.file(fileName, file.processedBlob!);
-    }
-    const blob = await zip.generateAsync({ type: 'blob' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `WildSaura_${lutName}_${doneFiles.length}files.zip`;
-    a.click();
-  }, [files, activeLut, settings.smartNaming]);
-
-  // Clear all
-  const clearAll = useCallback(() => {
-    files.forEach(f => { URL.revokeObjectURL(f.originalUrl); if (f.processedUrl) URL.revokeObjectURL(f.processedUrl); });
-    imageCache.current.clear();
-    setFiles([]); setSelectedId(null); setPreviewOriginal(null); setPreviewProcessed(null);
-  }, [files]);
-
-  const removeFile = useCallback((id: string) => {
-    const file = files.find(f => f.id === id);
-    if (file) { URL.revokeObjectURL(file.originalUrl); if (file.processedUrl) URL.revokeObjectURL(file.processedUrl); imageCache.current.delete(id); }
-    setFiles(prev => prev.filter(f => f.id !== id));
-    if (selectedId === id) setSelectedId(files.find(f => f.id !== id)?.id || null);
+    imageCache.current.delete(id);
   }, [files, selectedId]);
 
-  const doneCount = files.filter(f => f.status === 'done').length;
-  const pendingCount = files.filter(f => f.status === 'pending').length;
-  const totalBefore = files.reduce((s, f) => s + f.sizeBefore, 0);
-  const totalAfter = files.filter(f => f.sizeAfter !== null).reduce((s, f) => s + (f.sizeAfter || 0), 0);
+  // ── Reset all statuses ──
+  const resetAll = useCallback(() => {
+    setFiles((prev) => prev.map((f) => ({
+      ...f, status: 'pending' as const, convertedBlob: undefined, convertedSize: undefined, error: undefined,
+    })));
+    showToast('Reset all files', 'info');
+  }, [showToast]);
 
+  // ── Clear all ──
+  const clearAll = useCallback(() => {
+    setFiles([]);
+    setSelectedId(null);
+    imageCache.current.clear();
+    setPreviewOriginal(null);
+    setPreviewProcessed(null);
+    showToast('Cleared all files', 'info');
+  }, [showToast]);
+
+  // ── Add custom LUT ──
+  const addCustomLut = useCallback((preset: LUTPreset) => {
+    setPresets((prev) => [...prev, preset]);
+    setActiveLutId(preset.id);
+    showToast(`Loaded LUT: ${preset.name}`, 'success');
+  }, [showToast]);
+
+  // ─── Auth screen ──────────────────────────────────────────
+  if (!guestMode && !user && !authLoading) {
+    return <Auth onSkip={() => setGuestMode(true)} />;
+  }
+
+  // ─── Loading screen ───────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div style={{
+        height: '100vh', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        background: '#0f0f1a',
+      }}>
+        <div className="animate-spin" style={{
+          width: 32, height: 32, borderRadius: '50%',
+          border: '3px solid rgba(255,255,255,0.1)',
+          borderTopColor: 'var(--accent)',
+          marginBottom: 12,
+        }} />
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Loading WildSaura…</span>
+      </div>
+    );
+  }
+
+  // ─── Main Layout ──────────────────────────────────────────
   return (
-    <div className="min-h-screen" style={{ background: '#08080c', color: '#e5e5e5' }}>
-      {/* ═══ Header — compact mobile ═══ */}
-      <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', position: 'relative', overflow: 'hidden' }}>
-        <img src="./assets/logo-banner-text.jpg" alt="" className="header-banner" />
-        <div className="flex items-center gap-2.5" style={{ position: 'relative', zIndex: 1 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f0f1a' }}>
+
+      {/* ═══════════════ TOP HEADER BAR ═══════════════ */}
+      <header style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 16px', height: 48,
+        background: '#0a0a14',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        flexShrink: 0, zIndex: 50,
+      }}>
+        {/* Left: Logo + Mobile menu toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/* Mobile hamburger */}
+          {isMobile && files.length > 0 && (
+            <button
+              onClick={() => setMobileDrawerOpen(true)}
+              style={{
+                width: 32, height: 32, borderRadius: 8, border: 'none',
+                background: 'rgba(255,255,255,0.05)',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" strokeWidth="2" strokeLinecap="round">
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </button>
+          )}
+
           <img
             src="./assets/logo-w-icon.jpg"
             alt=""
-            style={{ width: '36px', height: '36px', borderRadius: '50%', objectFit: 'cover', border: '2px solid rgba(255,255,255,0.1)' }}
+            style={{ width: 28, height: 28, borderRadius: '50%' }}
+            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
           />
           <div>
-            <h1 className="text-sm font-semibold tracking-tight">
-              <span className="text-white">Wild</span><span className="brand-gradient">Saura</span>
-            </h1>
-            <p className="text-[8px] tracking-widest uppercase" style={{ color: 'rgba(255,255,255,0.2)' }}>Pro Studio</p>
+            <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>Wild</span>
+            <span className="brand-gradient" style={{ fontSize: 14, fontWeight: 700 }}>Saura</span>
+            {!isMobile && (
+              <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', marginLeft: 6, letterSpacing: 1 }}>
+                PRO STUDIO
+              </span>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-1.5" style={{ position: 'relative', zIndex: 1 }}>
-          {doneCount > 0 && (
-            <span className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ background: 'rgba(34,197,94,0.12)', color: '#22c55e' }}>
-              ✓ {doneCount}
-            </span>
-          )}
-        </div>
-      </div>
 
-      {/* ═══ Main Content — mobile-first max-width ═══ */}
-      <div style={{ maxWidth: '480px', margin: '0 auto', padding: '12px 12px 100px 12px' }} className="space-y-3">
-
-        {/* Image Preview or Drop Zone */}
-        {files.length === 0 ? (
-          <DropZone onFilesAdded={handleFilesAdded} />
-        ) : (
-          <>
-            {/* Preview */}
-            {selectedFile && previewOriginal && (
-              <ImagePreview
-                originalUrl={previewOriginal}
-                processedUrl={previewProcessed}
-                fileName={selectedFile.name}
-              />
-            )}
-
-            {/* ═══ LUT Filter Strip ═══ */}
-            <LUTPanel
-              activeLut={activeLut}
-              intensity={intensity}
-              previewUrl={previewOriginal}
-              onSelectPreset={(preset) => {
-                if (preset) setActiveLut({ type: 'preset', presetId: preset.id });
-                else setActiveLut(null);
+        {/* Center: Tab navigation */}
+        <nav style={{ display: 'flex', gap: 2 }}>
+          {(['catalog', 'presets', 'edit'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                padding: isMobile ? '6px 10px' : '6px 16px',
+                borderRadius: 6,
+                fontSize: isMobile ? 11 : 12,
+                fontWeight: 600,
+                background: activeTab === tab ? 'rgba(99,102,241,0.15)' : 'transparent',
+                border: activeTab === tab ? '1px solid rgba(99,102,241,0.3)' : '1px solid transparent',
+                color: activeTab === tab ? '#a78bfa' : 'rgba(255,255,255,0.4)',
+                cursor: 'pointer',
+                textTransform: 'capitalize',
+                transition: 'all 0.2s',
               }}
-              onLoadCube={(lut, name) => setActiveLut({ type: 'cube', lut, name })}
-              onClearLut={() => setActiveLut(null)}
-              onIntensityChange={setIntensity}
-            />
+            >
+              {tab === 'catalog' ? (isMobile ? '📊' : 'Catalog') : tab === 'presets' ? (isMobile ? '🎨' : 'Presets') : (isMobile ? '✏️' : 'Edit')}
+            </button>
+          ))}
+        </nav>
 
-            {/* ═══ Files Section ═══ */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'rgba(255,255,255,0.3)' }}>
-                  Files ({files.length})
-                </span>
-                {totalAfter > 0 && (
-                  <span className="text-[10px] font-medium" style={{ color: totalAfter <= totalBefore ? '#22c55e' : '#f59e0b' }}>
-                    {totalAfter <= totalBefore
-                      ? `${((1 - totalAfter / totalBefore) * 100).toFixed(0)}% saved`
-                      : `+${(((totalAfter / totalBefore) - 1) * 100).toFixed(0)}% — try Resize to 4K`}
-                  </span>
+        {/* Right: User menu */}
+        <UserMenu user={user} onSignOut={signOut} onNavigate={(tab) => setActiveTab(tab as any)} />
+      </header>
+
+      {/* ═══════════════ MAIN CONTENT ═══════════════ */}
+      {activeTab === 'catalog' ? (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <Dashboard userId={user?.uid || ''} />
+        </div>
+      ) : (
+        <>
+          {/* Desktop 3-column layout */}
+          {!isMobile ? (
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+              {/* ── LEFT SIDEBAR: File List ── */}
+              {files.length > 0 && (
+                <aside className="file-sidebar" style={{
+                  width: 220, flexShrink: 0,
+                  background: 'var(--bg-secondary)',
+                  borderRight: '1px solid var(--border)',
+                  display: 'flex', flexDirection: 'column',
+                  overflow: 'hidden',
+                }}>
+                  <div style={{
+                    padding: '10px 10px 6px',
+                    borderBottom: '1px solid var(--border)',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                        letterSpacing: 1, color: 'var(--text-muted)',
+                      }}>
+                        Files ({files.length})
+                      </span>
+                      <DropZone onFilesAdded={handleFilesAdded} compact />
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, overflowY: 'auto', padding: 6 }}>
+                    <FileList
+                      files={files}
+                      selectedId={selectedId}
+                      onSelect={setSelectedId}
+                      onRemove={removeFile}
+                      onDownloadSingle={downloadSingle}
+                    />
+                  </div>
+                </aside>
+              )}
+
+              {/* ── CENTER: Image Preview + Preset Strip ── */}
+              <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {/* Image Preview */}
+                <div style={{
+                  flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: 12, overflow: 'hidden',
+                  background: '#0a0a12',
+                }}>
+                  {files.length === 0 ? (
+                    <DropZone onFilesAdded={handleFilesAdded} />
+                  ) : selectedFile && previewOriginal ? (
+                    <ImagePreview
+                      originalUrl={previewOriginal}
+                      processedUrl={previewProcessed}
+                      fileName={selectedFile.name}
+                    />
+                  ) : (
+                    <div style={{
+                      textAlign: 'center', color: 'var(--text-muted)',
+                    }}>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="1.5" style={{ marginBottom: 8 }}>
+                        <rect x="3" y="3" width="18" height="18" rx="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <polyline points="21 15 16 10 5 21" />
+                      </svg>
+                      <div style={{ fontSize: 12 }}>Select a file to preview</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Bottom: Preset Strip */}
+                {files.length > 0 && (
+                  <div style={{
+                    borderTop: '1px solid var(--border)',
+                    background: 'var(--bg-secondary)',
+                    padding: '6px 12px',
+                    flexShrink: 0,
+                  }}>
+                    <LUTPanel
+                      presets={presets}
+                      activeLutId={activeLutId}
+                      intensity={intensity}
+                      onSelectLut={setActiveLutId}
+                      onIntensityChange={setIntensity}
+                      onAddCustomLut={addCustomLut}
+                    />
+                  </div>
                 )}
-              </div>
-              <FileList
+              </main>
+
+              {/* ── RIGHT SIDEBAR: Edit Panel ── */}
+              {activeTab === 'edit' && files.length > 0 && (
+                <aside style={{
+                  width: 280, flexShrink: 0,
+                  background: 'var(--bg-secondary)',
+                  borderLeft: '1px solid var(--border)',
+                  overflow: 'hidden',
+                  display: 'flex', flexDirection: 'column',
+                }}>
+                  <ConversionSettings
+                    settings={settings}
+                    onChange={setSettings}
+                    intensity={intensity}
+                    onIntensityChange={setIntensity}
+                    activeLut={activeLutId}
+                    onConvertAll={processAll}
+                    onDownloadZip={downloadAllZip}
+                    onReset={resetAll}
+                    onClearAll={clearAll}
+                    isProcessingAll={isProcessingAll}
+                    fileStats={fileStats}
+                  />
+                </aside>
+              )}
+            </div>
+          ) : (
+            /* ═══ MOBILE VERTICAL LAYOUT ═══ */
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {/* Mobile file drawer */}
+              <MobileFileDrawer
+                open={mobileDrawerOpen}
+                onClose={() => setMobileDrawerOpen(false)}
                 files={files}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onRemove={removeFile}
                 onDownloadSingle={downloadSingle}
+                onFilesAdded={handleFilesAdded}
               />
-            </div>
 
-            {/* ═══ SETTINGS — Quality always visible ═══ */}
-            <div className="liquid-glass overflow-hidden">
-              {/* Quality Slider — ALWAYS VISIBLE */}
-              <div className="px-4 pt-3 pb-2">
-                <div className="flex justify-between items-center mb-2">
-                  <div className="flex items-center gap-2">
-                    <Settings size={13} style={{ color: '#a78bfa' }} />
-                    <span className="text-xs font-semibold" style={{ color: 'rgba(255,255,255,0.7)' }}>WebP Quality</span>
-                  </div>
-                  <span className="text-sm font-bold brand-gradient">{settings.quality}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={30}
-                  max={100}
-                  value={settings.quality}
-                  onChange={e => setSettings(s => ({ ...s, quality: parseInt(e.target.value) }))}
-                  className="w-full"
-                />
-                <div className="flex justify-between mt-1">
-                  <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.2)' }}>Small file</span>
-                  <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.2)' }}>Best quality</span>
-                </div>
-              </div>
-
-              {/* Quick Toggles — ALWAYS VISIBLE */}
-              <div className="px-4 pb-2 flex flex-wrap gap-2">
-                {[
-                  { key: 'resizeTo4K' as const, label: '4K Resize', icon: '📐' },
-                  { key: 'lossless' as const, label: 'Lossless', icon: '💎' },
-                  { key: 'smartNaming' as const, label: 'Smart Name', icon: '🏷️' },
-                  { key: 'preserveMetadata' as const, label: 'Keep EXIF', icon: '📷' },
-                  { key: 'autoConvert' as const, label: 'Auto', icon: '⚡' },
-                ].map(item => (
-                  <button
-                    key={item.key}
-                    onClick={() => setSettings(s => ({ ...s, [item.key]: !s[item.key] }))}
-                    style={{
-                      padding: '5px 10px',
-                      borderRadius: '8px',
-                      fontSize: '10px',
-                      fontWeight: 600,
-                      background: settings[item.key]
-                        ? 'rgba(99,102,241,0.15)'
-                        : 'rgba(255,255,255,0.03)',
-                      border: `1px solid ${settings[item.key]
-                        ? 'rgba(99,102,241,0.3)'
-                        : 'rgba(255,255,255,0.06)'}`,
-                      color: settings[item.key]
-                        ? '#a78bfa'
-                        : 'rgba(255,255,255,0.3)',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                    }}
-                  >
-                    {item.icon} {item.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Size optimization info */}
-              <div className="px-4 pb-3">
-                <div className="text-[9px] p-2 rounded-lg" style={{
-                  background: 'rgba(99,102,241,0.05)',
-                  border: '1px solid rgba(99,102,241,0.1)',
-                  color: 'rgba(255,255,255,0.35)',
-                }}>
-                  💡 Auto-optimizes: reduces quality if WebP &gt; original, falls back to JPEG if needed.
-                  {!settings.resizeTo4K && ' Enable "4K Resize" for smaller files.'}
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* ═══ Fixed Bottom Action Bar — mobile-friendly ═══ */}
-      {files.length > 0 && (
-        <div style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          padding: '10px 12px',
-          paddingBottom: 'max(10px, env(safe-area-inset-bottom))',
-          background: 'rgba(8,8,12,0.92)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
-          borderTop: '1px solid rgba(255,255,255,0.06)',
-          zIndex: 50,
-        }}>
-          <div style={{ maxWidth: '480px', margin: '0 auto' }}>
-            {/* Row 1: Convert button (if pending) */}
-            {pendingCount > 0 && (
-              <button
-                onClick={processAll}
-                disabled={isProcessingAll}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  borderRadius: '12px',
-                  background: isProcessingAll
-                    ? 'rgba(99,102,241,0.12)'
-                    : 'linear-gradient(135deg, #6366f1, #a855f7)',
-                  border: 'none',
-                  color: '#fff',
-                  fontSize: '14px',
-                  fontWeight: 700,
-                  letterSpacing: '0.5px',
-                  cursor: isProcessingAll ? 'not-allowed' : 'pointer',
-                  marginBottom: '8px',
-                  opacity: isProcessingAll ? 0.6 : 1,
-                }}
-              >
-                {isProcessingAll
-                  ? `⏳ Converting...`
-                  : `🎬 Convert to WebP (${pendingCount})`}
-              </button>
-            )}
-
-            {/* Row 2: Action buttons — all always visible */}
-            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-              {/* Add More */}
-              <DropZone onFilesAdded={handleFilesAdded} compact />
-
-              {/* Reset — re-convert with different settings */}
-              <button
-                onClick={resetAll}
-                disabled={doneCount === 0}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '4px',
-                  padding: '8px 10px', borderRadius: '10px', fontSize: '11px', fontWeight: 600,
-                  background: doneCount > 0 ? 'rgba(251,191,36,0.1)' : 'rgba(255,255,255,0.03)',
-                  border: `1px solid ${doneCount > 0 ? 'rgba(251,191,36,0.2)' : 'rgba(255,255,255,0.06)'}`,
-                  color: doneCount > 0 ? '#fbbf24' : 'rgba(255,255,255,0.2)',
-                  cursor: doneCount > 0 ? 'pointer' : 'default',
-                  opacity: doneCount > 0 ? 1 : 0.5,
-                }}
-              >
-                <RotateCcw size={12} /> Reset
-              </button>
-
-              {/* Clear All */}
-              <button
-                onClick={clearAll}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '4px',
-                  padding: '8px 10px', borderRadius: '10px', fontSize: '11px', fontWeight: 600,
-                  background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)',
-                  color: '#f87171', cursor: 'pointer',
-                }}
-              >
-                <Trash2 size={12} /> Clear
-              </button>
-
-              {/* Spacer */}
-              <div style={{ flex: 1 }} />
-
-              {/* Download Zip — always visible */}
-              <button
-                onClick={downloadAllZip}
-                disabled={doneCount === 0}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '5px',
-                  padding: '8px 14px', borderRadius: '10px', fontSize: '11px', fontWeight: 700,
-                  opacity: doneCount > 0 ? 1 : 0.4,
-                  cursor: doneCount > 0 ? 'pointer' : 'default',
-                  background: doneCount > 0 ? 'rgba(34,197,94,0.12)' : 'rgba(255,255,255,0.03)',
-                  border: `1px solid ${doneCount > 0 ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.06)'}`,
-                  color: doneCount > 0 ? '#22c55e' : 'rgba(255,255,255,0.2)',
-                }}
-              >
-                <Download size={14} /> Zip {doneCount > 0 ? `(${doneCount})` : ''}
-              </button>
-            </div>
-
-            {/* Stats line */}
-            {totalAfter > 0 && (
+              {/* Image Preview */}
               <div style={{
-                textAlign: 'center', paddingTop: '6px',
-                fontSize: '9px', color: 'rgba(255,255,255,0.3)',
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: 8, overflow: 'hidden',
+                background: '#0a0a12', minHeight: 0,
               }}>
-                {(totalBefore / (1024 * 1024)).toFixed(1)} MB →{' '}
-                <span style={{ color: totalAfter <= totalBefore ? '#22c55e' : '#f59e0b' }}>
-                  {(totalAfter / (1024 * 1024)).toFixed(1)} MB
-                </span>
-                {totalAfter <= totalBefore && ` (${((1 - totalAfter / totalBefore) * 100).toFixed(0)}% saved)`}
+                {files.length === 0 ? (
+                  <DropZone onFilesAdded={handleFilesAdded} />
+                ) : selectedFile && previewOriginal ? (
+                  <ImagePreview
+                    originalUrl={previewOriginal}
+                    processedUrl={previewProcessed}
+                    fileName={selectedFile.name}
+                  />
+                ) : (
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
+                    Select a file to preview
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </div>
+
+              {/* Preset Strip */}
+              {files.length > 0 && (
+                <div style={{
+                  borderTop: '1px solid var(--border)',
+                  background: 'var(--bg-secondary)',
+                  padding: '4px 8px',
+                  flexShrink: 0,
+                }}>
+                  <LUTPanel
+                    presets={presets}
+                    activeLutId={activeLutId}
+                    intensity={intensity}
+                    onSelectLut={setActiveLutId}
+                    onIntensityChange={setIntensity}
+                    onAddCustomLut={addCustomLut}
+                  />
+                </div>
+              )}
+
+              {/* Mobile Edit Controls (scrollable) */}
+              {activeTab === 'edit' && files.length > 0 && (
+                <div className="right-panel-mobile" style={{
+                  maxHeight: 220, overflowY: 'auto', flexShrink: 0,
+                  background: 'var(--bg-secondary)',
+                  borderTop: '1px solid var(--border)',
+                }}>
+                  <ConversionSettings
+                    settings={settings}
+                    onChange={setSettings}
+                    intensity={intensity}
+                    onIntensityChange={setIntensity}
+                    activeLut={activeLutId}
+                    onConvertAll={processAll}
+                    onDownloadZip={downloadAllZip}
+                    onReset={resetAll}
+                    onClearAll={clearAll}
+                    isProcessingAll={isProcessingAll}
+                    fileStats={fileStats}
+                  />
+                </div>
+              )}
+
+              {/* Mobile fixed bottom action bar (presets tab) */}
+              {activeTab === 'presets' && files.length > 0 && (
+                <div style={{
+                  display: 'flex', gap: 8, padding: '8px 12px',
+                  background: 'var(--bg-secondary)',
+                  borderTop: '1px solid var(--border)',
+                  flexShrink: 0,
+                }}>
+                  <button
+                    className="btn-primary"
+                    onClick={processAll}
+                    disabled={isProcessingAll || fileStats.pending === 0}
+                    style={{ flex: 1, padding: '10px', fontSize: 12, fontWeight: 700 }}
+                  >
+                    {isProcessingAll ? (
+                      <>
+                        <span className="animate-spin" style={{
+                          display: 'inline-block', width: 12, height: 12, borderRadius: '50%',
+                          border: '2px solid transparent', borderTopColor: '#fff',
+                          marginRight: 6, verticalAlign: 'middle',
+                        }} />
+                        Processing…
+                      </>
+                    ) : (
+                      `🎬 Convert (${fileStats.pending})`
+                    )}
+                  </button>
+                  <button
+                    className="btn-success"
+                    onClick={downloadAllZip}
+                    disabled={fileStats.done === 0}
+                    style={{ flex: 1, padding: '10px', fontSize: 12, fontWeight: 700 }}
+                  >
+                    📥 Zip ({fileStats.done})
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 };
+
+// ─── Root Wrapper ─────────────────────────────────────────
+
+const App: React.FC = () => (
+  <AuthProvider>
+    <ToastProvider>
+      <WildSauraApp />
+    </ToastProvider>
+  </AuthProvider>
+);
 
 createRoot(document.getElementById('root')!).render(<App />);
