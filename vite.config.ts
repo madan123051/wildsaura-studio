@@ -1,12 +1,15 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  base: '/wildsaura-studio/',
+  plugins: [react()],
   build: {
     outDir: 'dist',
-    target: 'es2020',
+    sourcemap: false,
+    minify: 'terser',
+    target: 'esnext'
   },
+  server: {
+    port: 3000
+  }
 })
