@@ -12,13 +12,28 @@ import type { FileItem } from './components/FileList';
 import ImagePreview from './components/ImagePreview';
 import LUTPanel from './components/LUTPanel';
 import type { LUTPreset } from './components/LUTPanel';
-import ConversionSettings from './components/ConversionSettings';
-import type { ConversionSettingsData } from './components/ConversionSettings';
+import EditPanel from './components/EditPanel';
+import PresetsPanel from './components/PresetsPanel';
+import CatalogView from './components/CatalogView';
+import { DEFAULT_ADJUSTMENTS, DEFAULT_HSL_STATE } from './types';
+import type { EditAdjustments, HSLState } from './types';
+import * as editing from './utils/imageEditing';
+import { BUILT_IN_PRESETS } from './utils/presetData';
 import { applyLUT } from './utils/imageProcessor';
 import { BUILT_IN_LUTS } from './utils/lutData';
 import './styles.css';
 
 declare const JSZip: any;
+
+// ─── Local type (previously imported from ConversionSettings) ─────
+interface ConversionSettingsData {
+  quality: number;
+  resize4k: boolean;
+  lossless: boolean;
+  smartName: boolean;
+  keepExif: boolean;
+  autoConvert: boolean;
+}
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -224,6 +239,11 @@ const WildSauraApp: React.FC = () => {
   const [activeLutId, setActiveLutId] = useState<string | null>(null);
   const [intensity, setIntensity] = useState(100);
 
+  // ── Edit Adjustments State (NEW) ──
+  const [adjustments, setAdjustments] = useState<EditAdjustments>({ ...DEFAULT_ADJUSTMENTS });
+  const [hslState, setHslState] = useState<HSLState>({ ...DEFAULT_HSL_STATE });
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
+
   // ── Settings ──
   const [settings, setSettings] = useState<ConversionSettingsData>({
     quality: 82,
@@ -278,11 +298,15 @@ const WildSauraApp: React.FC = () => {
       const dataUrl = await fileToDataUrl(file.file);
       setPreviewOriginal(dataUrl);
 
+      // Check if any edits or LUT are active
+      const hasAdjustments = Object.entries(adjustments).some(([_, v]) => v !== 0);
+      const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
+      const hasLut = activeLut && activeLut.data;
+
       if (file.status === 'done' && file.convertedBlob) {
         const url = URL.createObjectURL(file.convertedBlob);
         setPreviewProcessed(url);
-      } else if (activeLut && activeLut.data) {
-        // Generate a live preview with the current LUT
+      } else if (hasAdjustments || hasHSL || hasLut) {
         let img = imageCache.current.get(file.id);
         if (!img) {
           img = await loadImage(dataUrl);
@@ -290,25 +314,56 @@ const WildSauraApp: React.FC = () => {
         }
         const canvas = document.createElement('canvas');
         canvas.width = Math.min(img.width, 800);
-        canvas.height = Math.min(img.height, Math.round(img.height * (canvas.width / img.width)));
+        canvas.height = Math.round(img.height * (canvas.width / img.width));
         const ctx = canvas.getContext('2d')!;
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        applyLUT(imageData.data, activeLut.data, activeLut.size, intensity / 100);
-        ctx.putImageData(imageData, 0, 0);
+        const { data } = imageData;
+        const w = canvas.width;
+        const h = canvas.height;
 
-        const previewUrl = canvas.toDataURL('image/jpeg', 0.85);
-        setPreviewProcessed(previewUrl);
+        // Apply adjustments in order
+        if (adjustments.exposure !== 0) editing.adjustExposure(data, w, h, adjustments.exposure);
+        if (adjustments.contrast !== 0) editing.adjustContrast(data, w, h, adjustments.contrast);
+        if (adjustments.highlights !== 0) editing.adjustHighlights(data, w, h, adjustments.highlights);
+        if (adjustments.shadows !== 0) editing.adjustShadows(data, w, h, adjustments.shadows);
+        if (adjustments.whites !== 0) editing.adjustWhites(data, w, h, adjustments.whites);
+        if (adjustments.blacks !== 0) editing.adjustBlacks(data, w, h, adjustments.blacks);
+        if (adjustments.temperature !== 0) editing.adjustTemperature(data, w, h, adjustments.temperature);
+        if (adjustments.tint !== 0) editing.adjustTint(data, w, h, adjustments.tint);
+        if (adjustments.vibrance !== 0) editing.adjustVibrance(data, w, h, adjustments.vibrance);
+        if (adjustments.saturation !== 0) editing.adjustSaturation(data, w, h, adjustments.saturation);
+        if (adjustments.clarity !== 0) editing.adjustClarity(data, w, h, adjustments.clarity);
+        if (adjustments.sharpness !== 0) editing.adjustSharpness(data, w, h, adjustments.sharpness);
+        if (adjustments.denoise !== 0) editing.adjustDenoise(data, w, h, adjustments.denoise);
+        if (adjustments.vignette !== 0) editing.applyVignette(data, w, h, adjustments.vignette);
+        if (adjustments.grain !== 0) editing.applyFilmGrain(data, w, h, adjustments.grain);
+        if (adjustments.fog !== 0) editing.applyFog(data, w, h, adjustments.fog);
+
+        // Apply HSL
+        for (const [channel, adj] of Object.entries(hslState)) {
+          if (adj.hue !== 0 || adj.saturation !== 0 || adj.luminance !== 0) {
+            editing.adjustHSL(data, w, h, channel, adj.hue, adj.saturation, adj.luminance);
+          }
+        }
+
+        // Apply LUT last
+        if (hasLut) {
+          applyLUT(data, activeLut!.data, activeLut!.size, intensity / 100);
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+        setPreviewProcessed(canvas.toDataURL('image/jpeg', 0.85));
       } else {
         setPreviewProcessed(null);
       }
     } catch (err) {
-      console.error('Preview generation error:', err);
+      console.error('Preview error:', err);
     }
-  }, [activeLut, intensity]);
+  }, [activeLut, intensity, adjustments, hslState]);
 
-  // ── Update preview when selection or LUT changes ──
+  // ── Update preview when selection, LUT, or adjustments change ──
   useEffect(() => {
     if (selectedFile) {
       generatePreview(selectedFile);
@@ -316,7 +371,7 @@ const WildSauraApp: React.FC = () => {
       setPreviewOriginal(null);
       setPreviewProcessed(null);
     }
-  }, [selectedFile, activeLutId, intensity, generatePreview]);
+  }, [selectedFile, activeLutId, intensity, adjustments, hslState, generatePreview]);
 
   // ── Handle files added ──
   const handleFilesAdded = useCallback(async (newFiles: File[]) => {
@@ -381,7 +436,7 @@ const WildSauraApp: React.FC = () => {
         imageCache.current.set(fileId, img);
       }
 
-      // Create canvas
+      // Create canvas — apply resize4k BEFORE adjustments
       let w = img.naturalWidth;
       let h = img.naturalHeight;
       if (settings.resize4k && w > 3840) {
@@ -396,10 +451,45 @@ const WildSauraApp: React.FC = () => {
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0, w, h);
 
-      // Apply LUT if active
-      if (activeLut && activeLut.data) {
+      // Apply adjustments at full resolution
+      const hasAdjustments = Object.entries(adjustments).some(([_, v]) => v !== 0);
+      const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
+      const hasLut = activeLut && activeLut.data;
+
+      if (hasAdjustments || hasHSL || hasLut) {
         const imageData = ctx.getImageData(0, 0, w, h);
-        applyLUT(imageData.data, activeLut.data, activeLut.size, intensity / 100);
+        const { data } = imageData;
+
+        // Apply adjustments in order
+        if (adjustments.exposure !== 0) editing.adjustExposure(data, w, h, adjustments.exposure);
+        if (adjustments.contrast !== 0) editing.adjustContrast(data, w, h, adjustments.contrast);
+        if (adjustments.highlights !== 0) editing.adjustHighlights(data, w, h, adjustments.highlights);
+        if (adjustments.shadows !== 0) editing.adjustShadows(data, w, h, adjustments.shadows);
+        if (adjustments.whites !== 0) editing.adjustWhites(data, w, h, adjustments.whites);
+        if (adjustments.blacks !== 0) editing.adjustBlacks(data, w, h, adjustments.blacks);
+        if (adjustments.temperature !== 0) editing.adjustTemperature(data, w, h, adjustments.temperature);
+        if (adjustments.tint !== 0) editing.adjustTint(data, w, h, adjustments.tint);
+        if (adjustments.vibrance !== 0) editing.adjustVibrance(data, w, h, adjustments.vibrance);
+        if (adjustments.saturation !== 0) editing.adjustSaturation(data, w, h, adjustments.saturation);
+        if (adjustments.clarity !== 0) editing.adjustClarity(data, w, h, adjustments.clarity);
+        if (adjustments.sharpness !== 0) editing.adjustSharpness(data, w, h, adjustments.sharpness);
+        if (adjustments.denoise !== 0) editing.adjustDenoise(data, w, h, adjustments.denoise);
+        if (adjustments.vignette !== 0) editing.applyVignette(data, w, h, adjustments.vignette);
+        if (adjustments.grain !== 0) editing.applyFilmGrain(data, w, h, adjustments.grain);
+        if (adjustments.fog !== 0) editing.applyFog(data, w, h, adjustments.fog);
+
+        // Apply HSL
+        for (const [channel, adj] of Object.entries(hslState)) {
+          if (adj.hue !== 0 || adj.saturation !== 0 || adj.luminance !== 0) {
+            editing.adjustHSL(data, w, h, channel, adj.hue, adj.saturation, adj.luminance);
+          }
+        }
+
+        // Apply LUT last
+        if (hasLut) {
+          applyLUT(data, activeLut!.data, activeLut!.size, intensity / 100);
+        }
+
         ctx.putImageData(imageData, 0, 0);
       }
 
@@ -468,7 +558,7 @@ const WildSauraApp: React.FC = () => {
       );
       showToast(`Error: ${err.message || 'Conversion failed'}`, 'error');
     }
-  }, [files, activeLut, intensity, settings, user, showToast]);
+  }, [files, activeLut, intensity, settings, user, showToast, adjustments, hslState]);
 
   // ── Process all pending ──
   const processAll = useCallback(async () => {
@@ -566,6 +656,28 @@ const WildSauraApp: React.FC = () => {
     showToast(`Loaded LUT: ${preset.name}`, 'success');
   }, [showToast]);
 
+  // ── Apply preset (NEW) ──
+  const handleApplyPreset = useCallback((presetAdj: Partial<EditAdjustments>) => {
+    setAdjustments({
+      ...DEFAULT_ADJUSTMENTS,
+      ...presetAdj,
+    });
+    // Find which preset was applied (by matching adjustments)
+    const preset = BUILT_IN_PRESETS.find(p => {
+      return Object.entries(p.adjustments).every(([k, v]) => presetAdj[k as keyof EditAdjustments] === v);
+    });
+    setActivePresetId(preset?.id || null);
+    showToast(`Applied preset: ${preset?.name || 'Custom'}`, 'success');
+  }, [showToast]);
+
+  // ── Reset adjustments (NEW) ──
+  const resetAdjustments = useCallback(() => {
+    setAdjustments({ ...DEFAULT_ADJUSTMENTS });
+    setHslState({ ...DEFAULT_HSL_STATE });
+    setActivePresetId(null);
+    showToast('Reset all adjustments', 'info');
+  }, [showToast]);
+
   // ─── Auth screen ──────────────────────────────────────────
   if (!guestMode && !user && !authLoading) {
     return <Auth onSkip={() => setGuestMode(true)} />;
@@ -589,6 +701,41 @@ const WildSauraApp: React.FC = () => {
       </div>
     );
   }
+
+  // ─── Shared File Sidebar renderer (used in Edit + Presets tabs) ──
+  const renderFileSidebar = () => (
+    <aside className="file-sidebar" style={{
+      width: 220, flexShrink: 0,
+      background: 'var(--bg-secondary)',
+      borderRight: '1px solid var(--border)',
+      display: 'flex', flexDirection: 'column',
+      overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '10px 10px 6px',
+        borderBottom: '1px solid var(--border)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{
+            fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+            letterSpacing: 1, color: 'var(--text-muted)',
+          }}>
+            Files ({files.length})
+          </span>
+          <DropZone onFilesAdded={handleFilesAdded} compact />
+        </div>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', padding: 6 }}>
+        <FileList
+          files={files}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onRemove={removeFile}
+          onDownloadSingle={downloadSingle}
+        />
+      </div>
+    </aside>
+  );
 
   // ─── Main Layout ──────────────────────────────────────────
   return (
@@ -668,52 +815,145 @@ const WildSauraApp: React.FC = () => {
       </header>
 
       {/* ═══════════════ MAIN CONTENT ═══════════════ */}
-      {activeTab === 'catalog' ? (
+
+      {/* ── CATALOG TAB ── */}
+      {activeTab === 'catalog' && (
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          <Dashboard userId={user?.uid || ''} />
+          {files.length > 0 ? (
+            <CatalogView
+              files={files}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onRemove={removeFile}
+              onFilesAdded={handleFilesAdded}
+              onSwitchToEdit={() => setActiveTab('edit')}
+            />
+          ) : (
+            <Dashboard userId={user?.uid || ''} />
+          )}
         </div>
-      ) : (
+      )}
+
+      {/* ── PRESETS TAB ── */}
+      {activeTab === 'presets' && (
+        <>
+          {/* Desktop presets layout */}
+          {!isMobile ? (
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+              {/* Left sidebar with file list (if files exist) */}
+              {files.length > 0 && renderFileSidebar()}
+
+              {/* Center area splits: top=image preview, bottom=presets browser */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {/* Image preview area */}
+                {selectedFile && previewOriginal ? (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12, background: '#0a0a12', minHeight: '40%' }}>
+                    <ImagePreview
+                      originalUrl={previewOriginal}
+                      processedUrl={previewProcessed}
+                      fileName={selectedFile.name}
+                    />
+                  </div>
+                ) : null}
+
+                {/* Presets panel */}
+                <div style={{ flex: selectedFile ? 'none' : 1, height: selectedFile ? '50%' : '100%', overflowY: 'auto', background: 'var(--bg-secondary)' }}>
+                  <PresetsPanel
+                    onApplyPreset={handleApplyPreset}
+                    currentImage={previewOriginal}
+                    activePresetId={activePresetId}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Mobile presets layout */
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {/* Mobile file drawer */}
+              <MobileFileDrawer
+                open={mobileDrawerOpen}
+                onClose={() => setMobileDrawerOpen(false)}
+                files={files}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onRemove={removeFile}
+                onDownloadSingle={downloadSingle}
+                onFilesAdded={handleFilesAdded}
+              />
+
+              {/* Image preview (if selected) */}
+              {selectedFile && previewOriginal && (
+                <div style={{ flex: 'none', height: '35%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 8, background: '#0a0a12' }}>
+                  <ImagePreview
+                    originalUrl={previewOriginal}
+                    processedUrl={previewProcessed}
+                    fileName={selectedFile.name}
+                  />
+                </div>
+              )}
+
+              {/* Presets panel full area */}
+              <div style={{ flex: 1, overflowY: 'auto', background: 'var(--bg-secondary)' }}>
+                <PresetsPanel
+                  onApplyPreset={handleApplyPreset}
+                  currentImage={previewOriginal}
+                  activePresetId={activePresetId}
+                />
+              </div>
+
+              {/* Mobile fixed bottom action bar */}
+              {files.length > 0 && (
+                <div style={{
+                  display: 'flex', gap: 8, padding: '8px 12px',
+                  background: 'var(--bg-secondary)',
+                  borderTop: '1px solid var(--border)',
+                  flexShrink: 0,
+                }}>
+                  <button
+                    className="btn-primary"
+                    onClick={processAll}
+                    disabled={isProcessingAll || fileStats.pending === 0}
+                    style={{ flex: 1, padding: '10px', fontSize: 12, fontWeight: 700 }}
+                  >
+                    {isProcessingAll ? (
+                      <>
+                        <span className="animate-spin" style={{
+                          display: 'inline-block', width: 12, height: 12, borderRadius: '50%',
+                          border: '2px solid transparent', borderTopColor: '#fff',
+                          marginRight: 6, verticalAlign: 'middle',
+                        }} />
+                        Processing…
+                      </>
+                    ) : (
+                      `🎬 Convert (${fileStats.pending})`
+                    )}
+                  </button>
+                  <button
+                    className="btn-success"
+                    onClick={downloadAllZip}
+                    disabled={fileStats.done === 0}
+                    style={{ flex: 1, padding: '10px', fontSize: 12, fontWeight: 700 }}
+                  >
+                    📥 Zip ({fileStats.done})
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── EDIT TAB ── */}
+      {activeTab === 'edit' && (
         <>
           {/* Desktop 3-column layout */}
           {!isMobile ? (
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
 
               {/* ── LEFT SIDEBAR: File List ── */}
-              {files.length > 0 && (
-                <aside className="file-sidebar" style={{
-                  width: 220, flexShrink: 0,
-                  background: 'var(--bg-secondary)',
-                  borderRight: '1px solid var(--border)',
-                  display: 'flex', flexDirection: 'column',
-                  overflow: 'hidden',
-                }}>
-                  <div style={{
-                    padding: '10px 10px 6px',
-                    borderBottom: '1px solid var(--border)',
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-                        letterSpacing: 1, color: 'var(--text-muted)',
-                      }}>
-                        Files ({files.length})
-                      </span>
-                      <DropZone onFilesAdded={handleFilesAdded} compact />
-                    </div>
-                  </div>
-                  <div style={{ flex: 1, overflowY: 'auto', padding: 6 }}>
-                    <FileList
-                      files={files}
-                      selectedId={selectedId}
-                      onSelect={setSelectedId}
-                      onRemove={removeFile}
-                      onDownloadSingle={downloadSingle}
-                    />
-                  </div>
-                </aside>
-              )}
+              {files.length > 0 && renderFileSidebar()}
 
-              {/* ── CENTER: Image Preview + Preset Strip ── */}
+              {/* ── CENTER: Image Preview + LUT Strip ── */}
               <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 {/* Image Preview */}
                 <div style={{
@@ -743,7 +983,7 @@ const WildSauraApp: React.FC = () => {
                   )}
                 </div>
 
-                {/* Bottom: Preset Strip */}
+                {/* Bottom: LUT Strip */}
                 {files.length > 0 && (
                   <div style={{
                     borderTop: '1px solid var(--border)',
@@ -763,8 +1003,8 @@ const WildSauraApp: React.FC = () => {
                 )}
               </main>
 
-              {/* ── RIGHT SIDEBAR: Edit Panel ── */}
-              {activeTab === 'edit' && files.length > 0 && (
+              {/* ── RIGHT SIDEBAR: Edit Panel (NEW) ── */}
+              {files.length > 0 && (
                 <aside style={{
                   width: 280, flexShrink: 0,
                   background: 'var(--bg-secondary)',
@@ -772,18 +1012,26 @@ const WildSauraApp: React.FC = () => {
                   overflow: 'hidden',
                   display: 'flex', flexDirection: 'column',
                 }}>
-                  <ConversionSettings
-                    settings={settings}
-                    onChange={setSettings}
+                  <EditPanel
+                    adjustments={adjustments}
+                    onAdjustmentsChange={setAdjustments}
+                    hslState={hslState}
+                    onHSLChange={setHslState}
+                    presets={presets}
+                    activeLutId={activeLutId}
                     intensity={intensity}
+                    onSelectLut={setActiveLutId}
                     onIntensityChange={setIntensity}
-                    activeLut={activeLutId}
+                    onAddCustomLut={addCustomLut}
+                    settings={settings}
+                    onSettingsChange={setSettings}
                     onConvertAll={processAll}
                     onDownloadZip={downloadAllZip}
                     onReset={resetAll}
                     onClearAll={clearAll}
                     isProcessingAll={isProcessingAll}
                     fileStats={fileStats}
+                    onResetAdjustments={resetAdjustments}
                   />
                 </aside>
               )}
@@ -824,7 +1072,7 @@ const WildSauraApp: React.FC = () => {
                 )}
               </div>
 
-              {/* Preset Strip */}
+              {/* LUT Strip */}
               {files.length > 0 && (
                 <div style={{
                   borderTop: '1px solid var(--border)',
@@ -843,64 +1091,34 @@ const WildSauraApp: React.FC = () => {
                 </div>
               )}
 
-              {/* Mobile Edit Controls (scrollable) */}
-              {activeTab === 'edit' && files.length > 0 && (
+              {/* Mobile Edit Controls (scrollable) — EditPanel replaces ConversionSettings */}
+              {files.length > 0 && (
                 <div className="right-panel-mobile" style={{
-                  maxHeight: 220, overflowY: 'auto', flexShrink: 0,
+                  maxHeight: 280, overflowY: 'auto', flexShrink: 0,
                   background: 'var(--bg-secondary)',
                   borderTop: '1px solid var(--border)',
                 }}>
-                  <ConversionSettings
-                    settings={settings}
-                    onChange={setSettings}
+                  <EditPanel
+                    adjustments={adjustments}
+                    onAdjustmentsChange={setAdjustments}
+                    hslState={hslState}
+                    onHSLChange={setHslState}
+                    presets={presets}
+                    activeLutId={activeLutId}
                     intensity={intensity}
+                    onSelectLut={setActiveLutId}
                     onIntensityChange={setIntensity}
-                    activeLut={activeLutId}
+                    onAddCustomLut={addCustomLut}
+                    settings={settings}
+                    onSettingsChange={setSettings}
                     onConvertAll={processAll}
                     onDownloadZip={downloadAllZip}
                     onReset={resetAll}
                     onClearAll={clearAll}
                     isProcessingAll={isProcessingAll}
                     fileStats={fileStats}
+                    onResetAdjustments={resetAdjustments}
                   />
-                </div>
-              )}
-
-              {/* Mobile fixed bottom action bar (presets tab) */}
-              {activeTab === 'presets' && files.length > 0 && (
-                <div style={{
-                  display: 'flex', gap: 8, padding: '8px 12px',
-                  background: 'var(--bg-secondary)',
-                  borderTop: '1px solid var(--border)',
-                  flexShrink: 0,
-                }}>
-                  <button
-                    className="btn-primary"
-                    onClick={processAll}
-                    disabled={isProcessingAll || fileStats.pending === 0}
-                    style={{ flex: 1, padding: '10px', fontSize: 12, fontWeight: 700 }}
-                  >
-                    {isProcessingAll ? (
-                      <>
-                        <span className="animate-spin" style={{
-                          display: 'inline-block', width: 12, height: 12, borderRadius: '50%',
-                          border: '2px solid transparent', borderTopColor: '#fff',
-                          marginRight: 6, verticalAlign: 'middle',
-                        }} />
-                        Processing…
-                      </>
-                    ) : (
-                      `🎬 Convert (${fileStats.pending})`
-                    )}
-                  </button>
-                  <button
-                    className="btn-success"
-                    onClick={downloadAllZip}
-                    disabled={fileStats.done === 0}
-                    style={{ flex: 1, padding: '10px', fontSize: 12, fontWeight: 700 }}
-                  >
-                    📥 Zip ({fileStats.done})
-                  </button>
                 </div>
               )}
             </div>

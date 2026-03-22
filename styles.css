@@ -391,3 +391,226 @@ input[type="range"]::-moz-range-thumb {
 @keyframes dashRotate {
   to { stroke-dashoffset: -20; }
 }
+
+/* ══════════════════════════════════════════════════
+   NEW STYLES — v3 Components
+   ══════════════════════════════════════════════════ */
+
+/* Catalog View */
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  padding: 12px;
+}
+
+.catalog-card {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 2px solid transparent;
+}
+
+.catalog-card:hover {
+  transform: scale(1.02);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+
+.catalog-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 8px 24px rgba(99,102,241,0.2);
+}
+
+/* Preset Cards */
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 12px;
+}
+
+.preset-card {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 2px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.preset-card:hover {
+  border-color: rgba(99,102,241,0.3);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+
+.preset-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 4px 16px rgba(99,102,241,0.2);
+}
+
+/* Edit Panel Sections */
+.edit-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.edit-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.edit-section-header:hover {
+  background: rgba(255,255,255,0.02);
+}
+
+.edit-section-content {
+  padding: 4px 12px 12px;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+}
+
+/* Slider Track */
+.slider-track {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.08);
+  cursor: pointer;
+}
+
+.slider-fill {
+  position: absolute;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-secondary));
+  pointer-events: none;
+}
+
+.slider-knob {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  transform: translate(-50%, -50%);
+  top: 50%;
+  cursor: grab;
+  transition: box-shadow 0.15s;
+}
+
+.slider-knob:hover,
+.slider-knob.active {
+  box-shadow: 0 0 0 4px rgba(99,102,241,0.3), 0 1px 4px rgba(0,0,0,0.4);
+}
+
+/* HSL Color Circles */
+.hsl-circle {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.hsl-circle:hover {
+  transform: scale(1.15);
+}
+
+.hsl-circle.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Processing pulse */
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.status-processing {
+  animation: statusPulse 1.5s ease-in-out infinite;
+}
+
+/* Category tabs */
+.category-tab {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.category-tab:hover {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.1);
+}
+
+.category-tab.active {
+  background: rgba(99,102,241,0.15);
+  border-color: rgba(99,102,241,0.3);
+  color: var(--accent-secondary);
+}
+
+/* View toggle buttons */
+.view-toggle {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+
+.view-toggle:hover {
+  background: rgba(255,255,255,0.04);
+}
+
+.view-toggle.active {
+  background: rgba(99,102,241,0.15);
+  border-color: rgba(99,102,241,0.3);
+  color: var(--accent-secondary);
+}
+
+/* Drop zone overlay */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(99,102,241,0.1);
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(4px);
+}
+
+/* Mobile responsive — new component overrides */
+@media (max-width: 768px) {
+  .catalog-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .preset-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    padding: 8px;
+  }
+}
