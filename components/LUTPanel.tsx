@@ -1,163 +1,253 @@
-import React, { useRef } from 'react';
-import { Upload } from 'lucide-react';
-import { ActiveLUT, LUTPreset, CubeLUT } from '../types';
-import { LUT_PRESETS } from '../utils/lutData';
+import React, { useCallback, useRef } from 'react';
 
-interface Props {
-  activeLut: ActiveLUT;
-  intensity: number;
-  previewUrl: string | null;
-  onSelectPreset: (preset: LUTPreset | null) => void;
-  onLoadCube: (lut: CubeLUT, name: string) => void;
-  onClearLut: () => void;
-  onIntensityChange: (val: number) => void;
+export interface LUTPreset {
+  id: string;
+  name: string;
+  data: number[][][] | null;  // null = "OFF"
+  size: number;
+  isCustom?: boolean;
 }
 
-function parseCubeFile(text: string): CubeLUT | null {
+// Short display names for built-in presets (two lines)
+const SHORT_NAMES: Record<string, [string, string]> = {
+  'Midnight Teal':   ['Midnight',  'Teal'],
+  'Vintage Soul':    ['Vintage',   'Soul'],
+  'Wild Aura':       ['Wild',      'Aura'],
+  'Deep Forest':     ['Deep',      'Forest'],
+  'Golden Hour':     ['Golden',    'Hour'],
+  'Arctic Breeze':   ['Arctic',    'Breeze'],
+  'Desert Ember':    ['Desert',    'Ember'],
+  'Ocean Mist':      ['Ocean',     'Mist'],
+  'Neon Dusk':       ['Neon',      'Dusk'],
+  'Shadow Bloom':    ['Shadow',    'Bloom'],
+  'Ember Frost':     ['Ember',     'Frost'],
+  'Velvet Night':    ['Velvet',    'Night'],
+  'Solar Flare':     ['Solar',     'Flare'],
+  'Mossy Stone':     ['Mossy',     'Stone'],
+  'Crimson Tide':    ['Crimson',   'Tide'],
+  'Lavender Haze':   ['Lavender',  'Haze'],
+  'Rustic Charm':    ['Rustic',    'Charm'],
+  'Boreal Light':    ['Boreal',    'Light'],
+  'Copper Patina':   ['Copper',    'Patina'],
+  'Silent Storm':    ['Silent',    'Storm'],
+};
+
+// Gradient colors for preset circles
+const PRESET_GRADIENTS: string[] = [
+  'linear-gradient(135deg, #0d9488, #134e4a)',
+  'linear-gradient(135deg, #d4a574, #8b6914)',
+  'linear-gradient(135deg, #a855f7, #6d28d9)',
+  'linear-gradient(135deg, #166534, #052e16)',
+  'linear-gradient(135deg, #f59e0b, #d97706)',
+  'linear-gradient(135deg, #67e8f9, #0891b2)',
+  'linear-gradient(135deg, #f97316, #b45309)',
+  'linear-gradient(135deg, #06b6d4, #155e75)',
+  'linear-gradient(135deg, #ec4899, #7c3aed)',
+  'linear-gradient(135deg, #8b5cf6, #3b0764)',
+  'linear-gradient(135deg, #ef4444, #60a5fa)',
+  'linear-gradient(135deg, #312e81, #1e1b4b)',
+  'linear-gradient(135deg, #fbbf24, #dc2626)',
+  'linear-gradient(135deg, #4ade80, #365314)',
+  'linear-gradient(135deg, #dc2626, #7f1d1d)',
+  'linear-gradient(135deg, #c084fc, #7e22ce)',
+  'linear-gradient(135deg, #a16207, #713f12)',
+  'linear-gradient(135deg, #22d3ee, #0e7490)',
+  'linear-gradient(135deg, #c2956a, #78350f)',
+  'linear-gradient(135deg, #6b7280, #1f2937)',
+];
+
+function parseCubeFile(text: string): { data: number[][][]; size: number; name: string } | null {
   const lines = text.split('\n');
   let size = 0;
   let title = 'Custom LUT';
-  const rawData: number[] = [];
+  const data: number[][] = [];
+
   for (const line of lines) {
     const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    if (trimmed.startsWith('TITLE')) {
+      title = trimmed.replace(/^TITLE\s+"?/, '').replace(/"?\s*$/, '');
+      continue;
+    }
     if (trimmed.startsWith('LUT_3D_SIZE')) {
-      size = parseInt(trimmed.split(/\s+/)[1]);
-    } else if (trimmed.startsWith('TITLE')) {
-      title = trimmed.replace(/^TITLE\s*"?/, '').replace(/"?\s*$/, '') || title;
-    } else if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('DOMAIN')) {
-      const parts = trimmed.split(/\s+/).map(Number);
-      if (parts.length >= 3 && !isNaN(parts[0])) {
-        rawData.push(parts[0], parts[1], parts[2]);
+      size = parseInt(trimmed.split(/\s+/)[1], 10);
+      continue;
+    }
+    if (trimmed.startsWith('DOMAIN_MIN') || trimmed.startsWith('DOMAIN_MAX')) continue;
+
+    const parts = trimmed.split(/\s+/).map(Number);
+    if (parts.length >= 3 && !parts.some(isNaN)) {
+      data.push([parts[0], parts[1], parts[2]]);
+    }
+  }
+
+  if (size === 0 || data.length !== size * size * size) return null;
+
+  // Reshape flat → 3D
+  const lut: number[][][] = [];
+  let idx = 0;
+  for (let b = 0; b < size; b++) {
+    for (let g = 0; g < size; g++) {
+      for (let r = 0; r < size; r++) {
+        if (!lut[r]) lut[r] = [];
+        if (!lut[r][g]) lut[r][g] = [];
+        lut[r][g][b] = idx;
+        idx++;
       }
     }
   }
-  if (size > 0 && rawData.length === size * size * size * 3) {
-    return { title, size, data: new Float32Array(rawData) };
+
+  // Build proper 3D array with RGB values
+  const lutData: number[][][] = new Array(size);
+  for (let r = 0; r < size; r++) {
+    lutData[r] = new Array(size);
+    for (let g = 0; g < size; g++) {
+      lutData[r][g] = new Array(size);
+      for (let b = 0; b < size; b++) {
+        const flatIdx = b * size * size + g * size + r;
+        lutData[r][g][b] = flatIdx;
+      }
+    }
   }
-  return null;
+
+  return { data: lutData, size, name: title };
 }
 
-// Short display names for each LUT — 2 lines max
-const SHORT_NAMES: Record<string, [string, string]> = {
-  'midnight-teal':   ['Midnight', 'Teal'],
-  'vintage-soul':    ['Vintage', 'Soul'],
-  'wild-aura-gold':  ['Wild Aura', 'Gold'],
-  'deep-forest':     ['Deep', 'Forest'],
-  'kodak-250d':      ['Kodak', '250D'],
-  'shadow-whisper':  ['Shadow', 'Whisper'],
-  'tungsten-night':  ['Tungsten', 'Night'],
-  'ethereal-mist':   ['Ethereal', 'Mist'],
-  'bw-noir':         ['B&W', 'Noir'],
-  'safari-earth':    ['Safari', 'Earth'],
-  'nordic-blue':     ['Nordic', 'Blue'],
-  'cinematic-punch': ['Cinematic', 'Punch'],
-};
+interface LUTPanelProps {
+  presets: LUTPreset[];
+  activeLutId: string | null;
+  intensity: number;
+  onSelectLut: (id: string | null) => void;
+  onIntensityChange: (v: number) => void;
+  onAddCustomLut: (preset: LUTPreset) => void;
+}
 
-export const LUTPanel: React.FC<Props> = ({
-  activeLut, intensity, previewUrl, onSelectPreset, onLoadCube, onClearLut, onIntensityChange,
+const LUTPanel: React.FC<LUTPanelProps> = ({
+  presets,
+  activeLutId,
+  intensity,
+  onSelectLut,
+  onIntensityChange,
+  onAddCustomLut,
 }) => {
-  const cubeInputRef = useRef<HTMLInputElement>(null);
-  const activePresetId = activeLut?.type === 'preset' ? activeLut.presetId : null;
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleCubeUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUploadCube = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const lut = parseCubeFile(reader.result as string);
-      if (lut) onLoadCube(lut, file.name);
+      const text = reader.result as string;
+      const parsed = parseCubeFile(text);
+      if (parsed) {
+        onAddCustomLut({
+          id: 'custom_' + Date.now(),
+          name: parsed.name || file.name.replace('.cube', ''),
+          data: parsed.data,
+          size: parsed.size,
+          isCustom: true,
+        });
+      }
     };
     reader.readAsText(file);
-    e.target.value = '';
-  };
+    if (fileRef.current) fileRef.current.value = '';
+  }, [onAddCustomLut]);
 
   return (
     <div>
-      {/* Section title */}
-      <div className="flex items-center justify-between mb-3 px-1">
-        <span className="text-xs font-semibold tracking-wider uppercase" style={{ color: 'rgba(255,255,255,0.4)' }}>
-          Filters
-        </span>
-        <button
-          onClick={() => cubeInputRef.current?.click()}
-          className="flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-full"
-          style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.5)', border: '1px solid rgba(255,255,255,0.08)' }}
-        >
-          <Upload size={10} /> .cube
-        </button>
-        <input ref={cubeInputRef} type="file" accept=".cube" className="hidden" onChange={handleCubeUpload} />
-      </div>
-
-      {/* Horizontal LUT strip — names on circles */}
       <div className="lut-strip">
-        {/* None / Original */}
+        {/* OFF preset */}
         <div
-          className={`lut-thumb ${!activeLut ? 'active' : ''}`}
-          onClick={() => onClearLut()}
+          className={`lut-thumb${activeLutId === null ? ' active' : ''}`}
+          onClick={() => onSelectLut(null)}
         >
-          <div className="lut-circle lut-name-circle" style={{ background: 'rgba(255,255,255,0.04)', border: !activeLut ? '2px solid rgba(255,255,255,0.5)' : undefined }}>
-            <span className="lut-name-text">OFF</span>
+          <div className="lut-circle" style={{
+            background: activeLutId === null ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+          }}>
+            <span className="lut-name-text" style={{
+              color: activeLutId === null ? 'var(--accent)' : 'var(--text-muted)',
+              fontSize: 11,
+              fontWeight: 800,
+            }}>OFF</span>
           </div>
           <div className="lut-label">Original</div>
         </div>
 
-        {LUT_PRESETS.map(preset => {
-          const isActive = activePresetId === preset.id;
-          const names = SHORT_NAMES[preset.id] || [preset.name, ''];
+        {/* Preset items */}
+        {presets.map((preset, i) => {
+          const isActive = activeLutId === preset.id;
+          const shortName = SHORT_NAMES[preset.name];
+          const gradient = PRESET_GRADIENTS[i % PRESET_GRADIENTS.length];
+
           return (
             <div
               key={preset.id}
-              className={`lut-thumb ${isActive ? 'active' : ''}`}
-              onClick={() => onSelectPreset(isActive ? null : preset)}
+              className={`lut-thumb${isActive ? ' active' : ''}`}
+              onClick={() => onSelectLut(preset.id)}
             >
-              <div
-                className="lut-circle lut-name-circle"
-                style={{
-                  background: isActive ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
-                  border: isActive ? '2px solid rgba(168,85,247,0.7)' : undefined,
-                }}
-              >
-                <span className="lut-name-line1">{names[0]}</span>
-                <span className="lut-name-line2">{names[1]}</span>
+              <div className="lut-circle" style={{
+                background: isActive ? undefined : gradient,
+              }}>
+                {shortName ? (
+                  <>
+                    <span className="lut-name-line1">{shortName[0]}</span>
+                    <span className="lut-name-line2">{shortName[1]}</span>
+                  </>
+                ) : (
+                  <span className="lut-name-text" style={{ fontSize: 8, padding: '0 2px', textAlign: 'center', lineHeight: 1.1 }}>
+                    {preset.name.length > 10 ? preset.name.slice(0, 10) : preset.name}
+                  </span>
+                )}
               </div>
-              <div className="lut-label">{preset.name}</div>
+              <div className="lut-label">
+                {preset.name.length > 12 ? preset.name.slice(0, 11) + '…' : preset.name}
+              </div>
             </div>
           );
         })}
 
-        {/* Cube LUT if loaded */}
-        {activeLut?.type === 'cube' && (
-          <div className="lut-thumb active">
-            <div className="lut-circle lut-name-circle" style={{ background: 'rgba(99,102,241,0.2)', border: '2px solid rgba(168,85,247,0.7)' }}>
-              <span className="lut-name-line1">.cube</span>
-              <span className="lut-name-line2">Custom</span>
-            </div>
-            <div className="lut-label">{activeLut.name.slice(0, 12)}</div>
+        {/* Upload .cube button */}
+        <div className="lut-thumb" onClick={() => fileRef.current?.click()}>
+          <div className="lut-circle" style={{
+            background: 'transparent',
+            border: '2px dashed rgba(255,255,255,0.1)',
+          }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
           </div>
-        )}
+          <div className="lut-label">.cube</div>
+        </div>
+        <input ref={fileRef} type="file" accept=".cube" onChange={handleUploadCube} style={{ display: 'none' }} />
       </div>
 
-      {/* Intensity slider — only show when a LUT is active */}
-      {activeLut && (
-        <div className="mt-3 px-1">
-          <div className="flex justify-between items-center mb-1.5">
-            <span className="text-[10px] uppercase tracking-wider" style={{ color: 'rgba(255,255,255,0.3)' }}>
-              Intensity
-            </span>
-            <span className="text-xs font-semibold" style={{ color: '#a78bfa' }}>
-              {Math.round(intensity * 100)}%
-            </span>
-          </div>
+      {/* Intensity slider (inline, shown when a preset is selected) */}
+      {activeLutId !== null && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '6px 12px 4px',
+        }}>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', fontWeight: 600 }}>
+            Intensity
+          </span>
           <input
             type="range"
-            min={0}
-            max={100}
-            value={Math.round(intensity * 100)}
-            onChange={e => onIntensityChange(parseInt(e.target.value) / 100)}
-            className="w-full"
+            min={0} max={100} value={intensity}
+            onChange={(e) => onIntensityChange(Number(e.target.value))}
+            style={{ flex: 1 }}
           />
+          <span style={{
+            fontSize: 11, fontWeight: 700, color: 'var(--accent)',
+            minWidth: 32, textAlign: 'right',
+          }}>
+            {intensity}%
+          </span>
         </div>
       )}
     </div>
   );
 };
+
+export { parseCubeFile, SHORT_NAMES };
+export default LUTPanel;

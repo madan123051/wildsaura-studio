@@ -1,3 +1,37 @@
+// === EXISTING TYPES (keep exactly) ===
+export interface ColorAdjustment {
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  temperature?: number;
+  tint?: number;
+  shadows?: [number, number, number];
+  midtones?: [number, number, number];
+  highlights?: [number, number, number];
+  fadeBlacks?: number;
+  crushShadows?: number;
+  grain?: number;
+}
+
+export interface LUTPreset {
+  id: string;
+  name: string;
+  description: string;
+  gradient: string;
+  adjust: ColorAdjustment;
+}
+
+export interface CubeLUT {
+  title: string;
+  size: number;
+  data: Float32Array;
+}
+
+export type ActiveLUT =
+  | { type: 'preset'; presetId: string }
+  | { type: 'cube'; lut: CubeLUT; name: string }
+  | null;
+
 export interface ImageFile {
   id: string;
   file: File;
@@ -12,29 +46,6 @@ export interface ImageFile {
   sizeAfter: number | null;
 }
 
-export interface LUTPreset {
-  id: string;
-  name: string;
-  description: string;
-  gradient: string;
-  adjust: ColorAdjustment;
-}
-
-export interface ColorAdjustment {
-  brightness?: number;      // -100 to 100
-  contrast?: number;        // -100 to 100
-  saturation?: number;      // -100 to 100
-  temperature?: number;     // -100 (cool) to 100 (warm)
-  tint?: number;            // -100 (green) to 100 (magenta)
-  shadows?: [number, number, number];  // RGB lift
-  midtones?: [number, number, number]; // RGB gamma
-  highlights?: [number, number, number]; // RGB gain
-  fadeBlacks?: number;      // 0 to 100 - lift black point
-  crushShadows?: number;    // 0 to 100 - darken shadows
-  grain?: number;           // 0 to 100
-  vignette?: number;        // 0 to 100
-}
-
 export interface ConversionSettings {
   quality: number;
   lossless: boolean;
@@ -44,17 +55,27 @@ export interface ConversionSettings {
   smartNaming: boolean;
 }
 
-export interface CubeLUT {
-  title: string;
-  size: number;
-  data: Float32Array;
+// === NEW TYPES ===
+export type AppTab = 'catalog' | 'presets' | 'edit';
+
+export interface ConversionRecord {
+  id?: string;
+  userId: string;
+  fileName: string;
+  originalSize: number;
+  processedSize: number;
+  width: number;
+  height: number;
+  preset: string;
+  intensity: number;
+  quality: number;
+  savedPercentage: number;
+  thumbnailUrl?: string;
+  downloadUrl?: string;
+  createdAt: number;
 }
 
-export type ActiveLUT = {
-  type: 'preset';
-  presetId: string;
-} | {
-  type: 'cube';
-  lut: CubeLUT;
-  name: string;
-} | null;
+export interface UserStats {
+  totalImages: number;
+  totalSaved: number;
+}
