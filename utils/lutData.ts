@@ -1,4 +1,4 @@
-import { LUTPreset, CubeLUT } from '../types';
+import { LUTPreset, CubeLUT, ColorAdjustment } from '../types';
 
 export const LUT_PRESETS: LUTPreset[] = [
   {
@@ -258,3 +258,82 @@ export function applyCubeLUT(
 
   return result;
 }
+
+// ── Bake color adjustment presets into Float32Array LUTs ──
+
+function bakedClamp(v: number): number {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+
+function bakeColorAdjust(
+  r: number, g: number, b: number,
+  adj: ColorAdjustment
+): [number, number, number] {
+  let rr = r, gg = g, bb = b;
+  if (adj.brightness) { const br = adj.brightness * 2.55; rr += br; gg += br; bb += br; }
+  if (adj.contrast) {
+    const factor = (259 * (adj.contrast + 255)) / (255 * (259 - adj.contrast));
+    rr = factor * (rr - 128) + 128;
+    gg = factor * (gg - 128) + 128;
+    bb = factor * (bb - 128) + 128;
+  }
+  if (adj.temperature) { const t = adj.temperature * 0.5; rr += t; bb -= t; }
+  if (adj.tint) { const t = adj.tint * 0.3; gg -= t; }
+  if (adj.saturation) {
+    const gray = 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
+    const s = 1 + (adj.saturation / 100);
+    rr = gray + s * (rr - gray);
+    gg = gray + s * (gg - gray);
+    bb = gray + s * (bb - gray);
+  }
+  const lum = (rr + gg + bb) / 3 / 255;
+  if (adj.shadows) {
+    const w = Math.max(0, 1 - lum * 3);
+    rr += adj.shadows[0] * w; gg += adj.shadows[1] * w; bb += adj.shadows[2] * w;
+  }
+  if (adj.midtones) {
+    const w = 1 - Math.abs(lum - 0.5) * 2;
+    rr += adj.midtones[0] * w; gg += adj.midtones[1] * w; bb += adj.midtones[2] * w;
+  }
+  if (adj.highlights) {
+    const w = Math.max(0, lum * 3 - 2);
+    rr += adj.highlights[0] * w; gg += adj.highlights[1] * w; bb += adj.highlights[2] * w;
+  }
+  if (adj.fadeBlacks) {
+    const lift = adj.fadeBlacks * 2.55 * 0.5;
+    rr = rr + (lift - rr) * (1 - rr / 255) * (lift / 255) + lift * 0.15;
+    gg = gg + (lift - gg) * (1 - gg / 255) * (lift / 255) + lift * 0.15;
+    bb = bb + (lift - bb) * (1 - bb / 255) * (lift / 255) + lift * 0.15;
+  }
+  if (adj.crushShadows) {
+    const crush = adj.crushShadows / 100;
+    const lumNorm = (rr + gg + bb) / 3 / 255;
+    if (lumNorm < 0.4) {
+      const factor = 1 - crush * (1 - lumNorm / 0.4);
+      rr *= factor; gg *= factor; bb *= factor;
+    }
+  }
+  return [bakedClamp(rr), bakedClamp(gg), bakedClamp(bb)];
+}
+
+function bakePresetToLUT(preset: LUTPreset): { id: string; name: string; data: Float32Array; size: number } {
+  const size = 17;
+  const data = new Float32Array(size * size * size * 3);
+  for (let bi = 0; bi < size; bi++) {
+    for (let gi = 0; gi < size; gi++) {
+      for (let ri = 0; ri < size; ri++) {
+        const idx = (bi * size * size + gi * size + ri) * 3;
+        const inputR = (ri / (size - 1)) * 255;
+        const inputG = (gi / (size - 1)) * 255;
+        const inputB = (bi / (size - 1)) * 255;
+        const [outR, outG, outB] = bakeColorAdjust(inputR, inputG, inputB, preset.adjust);
+        data[idx] = outR / 255;
+        data[idx + 1] = outG / 255;
+        data[idx + 2] = outB / 255;
+      }
+    }
+  }
+  return { id: preset.id, name: preset.name, data, size };
+}
+
+export const BUILT_IN_LUTS = LUT_PRESETS.map(bakePresetToLUT);

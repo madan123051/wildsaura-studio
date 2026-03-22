@@ -3,7 +3,7 @@ import React, { useCallback, useRef } from 'react';
 export interface LUTPreset {
   id: string;
   name: string;
-  data: number[][][] | null;  // null = "OFF"
+  data: Float32Array | null;  // null = "OFF"
   size: number;
   isCustom?: boolean;
 }
@@ -56,11 +56,11 @@ const PRESET_GRADIENTS: string[] = [
   'linear-gradient(135deg, #6b7280, #1f2937)',
 ];
 
-function parseCubeFile(text: string): { data: number[][][]; size: number; name: string } | null {
+function parseCubeFile(text: string): { data: Float32Array; size: number; name: string } | null {
   const lines = text.split('\n');
   let size = 0;
   let title = 'Custom LUT';
-  const data: number[][] = [];
+  const values: number[] = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -77,40 +77,13 @@ function parseCubeFile(text: string): { data: number[][][]; size: number; name: 
 
     const parts = trimmed.split(/\s+/).map(Number);
     if (parts.length >= 3 && !parts.some(isNaN)) {
-      data.push([parts[0], parts[1], parts[2]]);
+      values.push(parts[0], parts[1], parts[2]);
     }
   }
 
-  if (size === 0 || data.length !== size * size * size) return null;
+  if (size === 0 || values.length < size * size * size * 3) return null;
 
-  // Reshape flat → 3D
-  const lut: number[][][] = [];
-  let idx = 0;
-  for (let b = 0; b < size; b++) {
-    for (let g = 0; g < size; g++) {
-      for (let r = 0; r < size; r++) {
-        if (!lut[r]) lut[r] = [];
-        if (!lut[r][g]) lut[r][g] = [];
-        lut[r][g][b] = idx;
-        idx++;
-      }
-    }
-  }
-
-  // Build proper 3D array with RGB values
-  const lutData: number[][][] = new Array(size);
-  for (let r = 0; r < size; r++) {
-    lutData[r] = new Array(size);
-    for (let g = 0; g < size; g++) {
-      lutData[r][g] = new Array(size);
-      for (let b = 0; b < size; b++) {
-        const flatIdx = b * size * size + g * size + r;
-        lutData[r][g][b] = flatIdx;
-      }
-    }
-  }
-
-  return { data: lutData, size, name: title };
+  return { data: new Float32Array(values), size, name: title };
 }
 
 interface LUTPanelProps {
