@@ -34,9 +34,13 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   /* ── Before/After slider state ── */
   const [sliderPos, setSliderPos] = useState(0.5); // 0..1
   const sliderDragging = useRef(false);
+  const sliderPosRef = useRef(0.5);
 
   const isCropping = cropState?.isActive === true;
   const hasProcessed = processedUrl !== null;
+
+  // Keep ref in sync for native listeners
+  useEffect(() => { sliderPosRef.current = sliderPos; }, [sliderPos]);
 
   /* ── Image load handling (with cache detection) ── */
   const handleImageLoad = useCallback(() => {
@@ -107,11 +111,14 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   const fnRef = useRef({ clampPan, emitCropRect, getFrameInfo });
   useEffect(() => { fnRef.current = { clampPan, emitCropRect, getFrameInfo }; });
 
-  /* ── Reset on crop mode / aspect change ── */
+  /* ── Reset view on crop mode / aspect change (keep EditPanel's rect) ── */
   useEffect(() => {
     if (isCropping) {
       setCropView({ scale: 1, panX: 0, panY: 0 });
-      onCropChange?.({ x: 0, y: 0, width: 1, height: 1 });
+      // Emit the correct centered rect based on frame geometry (don't reset to 0,0,1,1)
+      requestAnimationFrame(() => {
+        fnRef.current.emitCropRect(1, 0, 0);
+      });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCropping, cropState?.aspect]);
@@ -255,19 +262,28 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     };
   }, [isCropping]);
 
-  /* ── Before/After slider native listeners ── */
-  /* Touch/click ANYWHERE on image area starts dragging the slider */
+  /* ── Before/After slider — ONLY activate near divider line ── */
   useEffect(() => {
     const c = containerRef.current;
     if (!c || isCropping || !hasProcessed || !imageLoaded) return;
+
+    const THRESHOLD = 40; // px from divider to activate drag
 
     const getPos = (clientX: number): number => {
       const rect = c.getBoundingClientRect();
       return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     };
 
-    /* Touch: start drag from anywhere on the image */
+    const isNearDivider = (clientX: number): boolean => {
+      const rect = c.getBoundingClientRect();
+      const dividerX = rect.left + rect.width * sliderPosRef.current;
+      return Math.abs(clientX - dividerX) <= THRESHOLD;
+    };
+
+    /* Touch: only start if single finger near divider */
     const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      if (!isNearDivider(e.touches[0].clientX)) return;
       e.preventDefault();
       sliderDragging.current = true;
       setSliderPos(getPos(e.touches[0].clientX));
@@ -275,14 +291,17 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
 
     const onTouchMove = (e: TouchEvent) => {
       if (!sliderDragging.current) return;
+      // Cancel if second finger appears (user wants to pinch-zoom)
+      if (e.touches.length >= 2) { sliderDragging.current = false; return; }
       e.preventDefault();
       setSliderPos(getPos(e.touches[0].clientX));
     };
 
     const onTouchEnd = () => { sliderDragging.current = false; };
 
-    /* Mouse: start drag from anywhere on the image */
+    /* Mouse: only start if near divider */
     const onMouseDown = (e: MouseEvent) => {
+      if (!isNearDivider(e.clientX)) return;
       e.preventDefault();
       sliderDragging.current = true;
       setSliderPos(getPos(e.clientX));
@@ -346,7 +365,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         userSelect: 'none',
         touchAction: 'none',
         background: isCropping ? '#000' : 'transparent',
-        cursor: (!isCropping && hasProcessed && imageLoaded) ? 'ew-resize' : 'default',
+        cursor: isCropping ? 'default' : 'default',
       }}
     >
       {/* ── Dimension-source image (visible when NOT cropping) ── */}

@@ -15,8 +15,8 @@ import type { LUTPreset } from './components/LUTPanel';
 import EditPanel from './components/EditPanel';
 import PresetsPanel from './components/PresetsPanel';
 import CatalogView from './components/CatalogView';
-import { DEFAULT_ADJUSTMENTS, DEFAULT_HSL_STATE, DEFAULT_CROP_STATE } from './types';
-import type { EditAdjustments, HSLState, CropState, CropRect } from './types';
+import { DEFAULT_ADJUSTMENTS, DEFAULT_HSL_STATE, DEFAULT_CROP_STATE, DEFAULT_TRANSFORM_STATE } from './types';
+import type { EditAdjustments, HSLState, CropState, CropRect, TransformState } from './types';
 import * as editing from './utils/imageEditing';
 import { BUILT_IN_PRESETS } from './utils/presetData';
 import { applyLUT } from './utils/imageProcessor';
@@ -244,6 +244,7 @@ const WildSauraApp: React.FC = () => {
   const [hslState, setHslState] = useState<HSLState>({ ...DEFAULT_HSL_STATE });
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
   const [cropState, setCropState] = useState<CropState>({ ...DEFAULT_CROP_STATE });
+  const [transformState, setTransformState] = useState<TransformState>({ ...DEFAULT_TRANSFORM_STATE });
 
   // ── Settings ──
   const [settings, setSettings] = useState<ConversionSettingsData>({
@@ -293,6 +294,28 @@ const WildSauraApp: React.FC = () => {
     return { total, done, pending, totalBefore, totalAfter };
   }, [files]);
 
+  // ── Transform helper (rotate + flip) ──
+  const applyTransformToCanvas = useCallback((
+    source: HTMLImageElement | HTMLCanvasElement,
+    t: TransformState
+  ): HTMLCanvasElement => {
+    const sW = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
+    const sH = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
+    const isRotated90 = t.rotation === 90 || t.rotation === 270;
+    const outW = isRotated90 ? sH : sW;
+    const outH = isRotated90 ? sW : sH;
+    const c = document.createElement('canvas');
+    c.width = outW;
+    c.height = outH;
+    const ctx = c.getContext('2d')!;
+    ctx.translate(outW / 2, outH / 2);
+    ctx.rotate((t.rotation * Math.PI) / 180);
+    if (t.flipH) ctx.scale(-1, 1);
+    if (t.flipV) ctx.scale(1, -1);
+    ctx.drawImage(source, -sW / 2, -sH / 2);
+    return c;
+  }, []);
+
   // ── Generate preview for selected file ──
   const generatePreview = useCallback(async (file: FileItem) => {
     try {
@@ -304,11 +327,12 @@ const WildSauraApp: React.FC = () => {
       const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
       const hasLut = activeLut && activeLut.data;
       const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
+      const hasTransform = transformState.rotation !== 0 || transformState.flipH || transformState.flipV;
 
       if (file.status === 'done' && file.convertedBlob) {
         const url = URL.createObjectURL(file.convertedBlob);
         setPreviewProcessed(url);
-      } else if (hasAdjustments || hasHSL || hasLut || hasCrop) {
+      } else if (hasAdjustments || hasHSL || hasLut || hasCrop || hasTransform) {
         let img = imageCache.current.get(file.id);
         if (!img) {
           img = await loadImage(dataUrl);
@@ -316,20 +340,28 @@ const WildSauraApp: React.FC = () => {
         }
 
         let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
-        let srcW = img.width;
-        let srcH = img.height;
+        let srcW = img.naturalWidth;
+        let srcH = img.naturalHeight;
 
-        // Apply crop first
+        // Apply transform first (rotate + flip)
+        if (hasTransform) {
+          const transformed = applyTransformToCanvas(img, transformState);
+          srcCanvas = transformed;
+          srcW = transformed.width;
+          srcH = transformed.height;
+        }
+
+        // Apply crop second
         if (hasCrop) {
-          const cropX = Math.round(cropState.rect.x * img.naturalWidth);
-          const cropY = Math.round(cropState.rect.y * img.naturalHeight);
-          const cropW = Math.round(cropState.rect.width * img.naturalWidth);
-          const cropH = Math.round(cropState.rect.height * img.naturalHeight);
+          const cropX = Math.round(cropState.rect.x * srcW);
+          const cropY = Math.round(cropState.rect.y * srcH);
+          const cropW = Math.round(cropState.rect.width * srcW);
+          const cropH = Math.round(cropState.rect.height * srcH);
           const tempCanvas = document.createElement('canvas');
           tempCanvas.width = cropW;
           tempCanvas.height = cropH;
           const tempCtx = tempCanvas.getContext('2d')!;
-          tempCtx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          tempCtx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
           srcCanvas = tempCanvas;
           srcW = cropW;
           srcH = cropH;
@@ -384,7 +416,7 @@ const WildSauraApp: React.FC = () => {
     } catch (err) {
       console.error('Preview error:', err);
     }
-  }, [activeLut, intensity, adjustments, hslState, cropState]);
+  }, [activeLut, intensity, adjustments, hslState, cropState, transformState, applyTransformToCanvas]);
 
   // ── Update preview when selection, LUT, or adjustments change ──
   useEffect(() => {
@@ -394,7 +426,7 @@ const WildSauraApp: React.FC = () => {
       setPreviewOriginal(null);
       setPreviewProcessed(null);
     }
-  }, [selectedFile, activeLutId, intensity, adjustments, hslState, cropState, generatePreview]);
+  }, [selectedFile, activeLutId, intensity, adjustments, hslState, cropState, transformState, generatePreview]);
 
   // ── Handle files added ──
   const handleFilesAdded = useCallback(async (newFiles: File[]) => {
@@ -459,22 +491,30 @@ const WildSauraApp: React.FC = () => {
         imageCache.current.set(fileId, img);
       }
 
-      // Apply crop first, then resize4k
+      // Apply transform first (rotate + flip), then crop, then resize4k
+      const hasTransform = transformState.rotation !== 0 || transformState.flipH || transformState.flipV;
       const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
       let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
       let w = img.naturalWidth;
       let h = img.naturalHeight;
 
+      if (hasTransform) {
+        const transformed = applyTransformToCanvas(img, transformState);
+        srcCanvas = transformed;
+        w = transformed.width;
+        h = transformed.height;
+      }
+
       if (hasCrop) {
-        const cropX = Math.round(cropState.rect.x * img.naturalWidth);
-        const cropY = Math.round(cropState.rect.y * img.naturalHeight);
-        const cropW = Math.round(cropState.rect.width * img.naturalWidth);
-        const cropH = Math.round(cropState.rect.height * img.naturalHeight);
+        const cropX = Math.round(cropState.rect.x * w);
+        const cropY = Math.round(cropState.rect.y * h);
+        const cropW = Math.round(cropState.rect.width * w);
+        const cropH = Math.round(cropState.rect.height * h);
         const tempCanvas = document.createElement('canvas');
         tempCanvas.width = cropW;
         tempCanvas.height = cropH;
         const tempCtx = tempCanvas.getContext('2d')!;
-        tempCtx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        tempCtx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
         srcCanvas = tempCanvas;
         w = cropW;
         h = cropH;
@@ -599,7 +639,7 @@ const WildSauraApp: React.FC = () => {
       );
       showToast(`Error: ${err.message || 'Conversion failed'}`, 'error');
     }
-  }, [files, activeLut, intensity, settings, user, showToast, adjustments, hslState, cropState]);
+  }, [files, activeLut, intensity, settings, user, showToast, adjustments, hslState, cropState, transformState, applyTransformToCanvas]);
 
   // ── Process all pending ──
   const processAll = useCallback(async () => {
@@ -726,6 +766,7 @@ const WildSauraApp: React.FC = () => {
     setAdjustments({ ...DEFAULT_ADJUSTMENTS });
     setHslState({ ...DEFAULT_HSL_STATE });
     setCropState({ ...DEFAULT_CROP_STATE });
+    setTransformState({ ...DEFAULT_TRANSFORM_STATE });
     setActivePresetId(null);
     showToast('Reset all adjustments', 'info');
   }, [showToast]);
@@ -1093,6 +1134,8 @@ const WildSauraApp: React.FC = () => {
                     cropState={cropState}
                     onCropStateChange={setCropState}
                     onApplyCrop={handleApplyCrop}
+                    transformState={transformState}
+                    onTransformStateChange={setTransformState}
                   />
                 </aside>
               )}
@@ -1184,6 +1227,8 @@ const WildSauraApp: React.FC = () => {
                     cropState={cropState}
                     onCropStateChange={setCropState}
                     onApplyCrop={handleApplyCrop}
+                    transformState={transformState}
+                    onTransformStateChange={setTransformState}
                   />
                 </div>
               )}

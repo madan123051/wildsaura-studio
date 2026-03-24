@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import type { EditAdjustments, HSLState, HSLAdjustment, CropState, CropAspect } from '../types';
-import { DEFAULT_CROP_STATE, DEFAULT_CROP_RECT } from '../types';
+import type { EditAdjustments, HSLState, HSLAdjustment, CropState, CropAspect, TransformState } from '../types';
+import { DEFAULT_CROP_STATE, DEFAULT_CROP_RECT, DEFAULT_TRANSFORM_STATE } from '../types';
 import type { LUTPreset } from './LUTPanel';
 
 interface ConversionSettingsData {
@@ -35,6 +35,8 @@ interface EditPanelProps {
   cropState: CropState;
   onCropStateChange: (state: CropState) => void;
   onApplyCrop: () => void;
+  transformState: TransformState;
+  onTransformStateChange: (state: TransformState) => void;
 }
 
 // ─── Internal Slider ────────────────────────────────────────────────────────
@@ -413,6 +415,8 @@ const EditPanel: React.FC<EditPanelProps> = ({
   cropState,
   onCropStateChange,
   onApplyCrop,
+  transformState,
+  onTransformStateChange,
 }) => {
   const [selectedHslChannel, setSelectedHslChannel] = useState<string>('red');
 
@@ -631,6 +635,46 @@ const EditPanel: React.FC<EditPanelProps> = ({
             );
           })}
         </div>
+
+        {/* Rotate & Flip */}
+        <div style={{ display: 'flex', gap: 4, paddingBottom: 8 }}>
+          {[
+            { label: '↶', title: 'Rotate Left', action: () => onTransformStateChange({ ...transformState, rotation: ((transformState.rotation + 270) % 360) as 0 | 90 | 180 | 270 }) },
+            { label: '↷', title: 'Rotate Right', action: () => onTransformStateChange({ ...transformState, rotation: ((transformState.rotation + 90) % 360) as 0 | 90 | 180 | 270 }) },
+            { label: '⇔', title: 'Flip Horizontal', action: () => onTransformStateChange({ ...transformState, flipH: !transformState.flipH }) },
+            { label: '⇕', title: 'Flip Vertical', action: () => onTransformStateChange({ ...transformState, flipV: !transformState.flipV }) },
+          ].map((btn) => {
+            const isActive =
+              (btn.title === 'Flip Horizontal' && transformState.flipH) ||
+              (btn.title === 'Flip Vertical' && transformState.flipV);
+            return (
+              <button
+                key={btn.title}
+                title={btn.title}
+                onClick={btn.action}
+                style={{
+                  flex: 1,
+                  padding: '6px 0',
+                  borderRadius: 6,
+                  border: isActive ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.08)',
+                  background: isActive ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
+                  color: isActive ? '#a78bfa' : 'rgba(255,255,255,0.6)',
+                  fontSize: 16,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {btn.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {transformState.rotation !== 0 && (
+          <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', textAlign: 'center', marginBottom: 6 }}>
+            Rotation: {transformState.rotation}°
+          </div>
+        )}
 
         {/* Toggle crop mode */}
         <button

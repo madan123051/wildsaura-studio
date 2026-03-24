@@ -179,3 +179,15 @@ export interface CropState {
 
 export const DEFAULT_CROP_RECT: CropRect = { x: 0, y: 0, width: 1, height: 1 };
 export const DEFAULT_CROP_STATE: CropState = { rect: { ...DEFAULT_CROP_RECT }, aspect: 'free', isActive: false };
+
+export interface TransformState {
+  rotation: 0 | 90 | 180 | 270;
+  flipH: boolean;
+  flipV: boolean;
+}
+
+export const DEFAULT_TRANSFORM_STATE: TransformState = {
+  rotation: 0,
+  flipH: false,
+  flipV: false,
+};
