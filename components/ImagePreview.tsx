@@ -38,8 +38,26 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   const isCropping = cropState?.isActive === true;
   const hasProcessed = processedUrl !== null;
 
-  /* ── Lifecycle ── */
-  useEffect(() => { setImageLoaded(false); }, [originalUrl]);
+  /* ── Image load handling (with cache detection) ── */
+  const handleImageLoad = useCallback(() => {
+    setImageLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    setImageLoaded(false);
+    // Check if image is already cached in browser
+    const checkCache = () => {
+      const img = imgRef.current;
+      if (img && img.complete && img.naturalWidth > 0) {
+        setImageLoaded(true);
+      }
+    };
+    // Check immediately and after a tick (in case ref is not set yet)
+    checkCache();
+    const raf = requestAnimationFrame(checkCache);
+    const timer = setTimeout(checkCache, 50);
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer); };
+  }, [originalUrl]);
 
   /* ── Frame geometry helper ── */
   const getFrameInfo = useCallback(() => {
@@ -177,7 +195,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       e.preventDefault();
       if (e.touches.length === 0) { g.type = null; commit(); }
       else if (e.touches.length === 1) {
-        // Transitioned from pinch → pan
         g.type = 'pan';
         g.sX = e.touches[0].clientX; g.sY = e.touches[0].clientY;
         g.sPanX = g.panX; g.sPanY = g.panY;
@@ -239,6 +256,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   }, [isCropping]);
 
   /* ── Before/After slider native listeners ── */
+  /* Touch/click ANYWHERE on image area starts dragging the slider */
   useEffect(() => {
     const c = containerRef.current;
     if (!c || isCropping || !hasProcessed || !imageLoaded) return;
@@ -248,9 +266,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     };
 
+    /* Touch: start drag from anywhere on the image */
     const onTouchStart = (e: TouchEvent) => {
-      const t = e.target as HTMLElement;
-      if (!t.closest('[data-slider-handle]')) return;
       e.preventDefault();
       sliderDragging.current = true;
       setSliderPos(getPos(e.touches[0].clientX));
@@ -264,9 +281,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
 
     const onTouchEnd = () => { sliderDragging.current = false; };
 
+    /* Mouse: start drag from anywhere on the image */
     const onMouseDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement;
-      if (!t.closest('[data-slider-handle]')) return;
       e.preventDefault();
       sliderDragging.current = true;
       setSliderPos(getPos(e.clientX));
@@ -328,8 +344,9 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         overflow: 'hidden', borderRadius: 8,
         userSelect: 'none',
-        touchAction: isCropping ? 'none' : 'auto',
+        touchAction: 'none',
         background: isCropping ? '#000' : 'transparent',
+        cursor: (!isCropping && hasProcessed && imageLoaded) ? 'ew-resize' : 'default',
       }}
     >
       {/* ── Dimension-source image (visible when NOT cropping) ── */}
@@ -338,12 +355,13 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         src={originalUrl}
         alt=""
         draggable={false}
-        onLoad={() => setImageLoaded(true)}
+        onLoad={handleImageLoad}
         style={isCropping ? {
           position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none',
         } : {
           maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
           opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.3s',
+          pointerEvents: 'none',
           ...(hasProcessed ? {
             clipPath: `inset(0 ${(1 - sliderPos) * 100}% 0 0)`,
           } : {}),
@@ -390,7 +408,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
             />
             {/* Drag handle (circle with arrows) */}
             <div
-              data-slider-handle="true"
               style={{
                 position: 'absolute',
                 left: lineX - 18,
@@ -404,8 +421,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
                 alignItems: 'center',
                 justifyContent: 'center',
                 zIndex: 6,
-                cursor: 'ew-resize',
-                touchAction: 'none',
+                pointerEvents: 'none',
               }}
             >
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -443,7 +459,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         );
       })()}
 
-      {/* ══════════ CROP MODE ══════════ */}
+      {/* CROP MODE */}
       {isCropping && fi && imageLoaded && (
         <>
           {/* Dark background */}
@@ -523,7 +539,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
               fontSize: 11, fontWeight: 700, color: '#fff',
               pointerEvents: 'none', zIndex: 10,
             }}>
-              {cropView.scale.toFixed(1)}×
+              {cropView.scale.toFixed(1)}x
             </div>
           )}
 
@@ -536,7 +552,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
             pointerEvents: 'none', zIndex: 10,
             display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
           }}>
-            ✂️ Pinch to zoom · Drag to move
+            Pinch to zoom - Drag to move
           </div>
         </>
       )}
