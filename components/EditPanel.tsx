@@ -405,7 +405,7 @@ const EditPanel: React.FC<EditPanelProps> = ({
 
   const updateHsl = useCallback(
     (channel: string, field: keyof HSLAdjustment, value: number) => {
-      const current = (hslState as Record<string, HSLAdjustment>)[channel] || { hue: 0, saturation: 0, luminance: 0 };
+      const current = (hslState as unknown as Record<string, HSLAdjustment>)[channel] || { hue: 0, saturation: 0, luminance: 0 };
       onHSLChange({
         ...hslState,
         [channel]: { ...current, [field]: value },
@@ -460,7 +460,7 @@ const EditPanel: React.FC<EditPanelProps> = ({
 
   const exportNonZero = false;
 
-  const currentHsl: HSLAdjustment = (hslState as Record<string, HSLAdjustment>)[selectedHslChannel] || {
+  const currentHsl: HSLAdjustment = (hslState as unknown as Record<string, HSLAdjustment>)[selectedHslChannel] || {
     hue: 0,
     saturation: 0,
     luminance: 0,
@@ -631,7 +631,7 @@ const EditPanel: React.FC<EditPanelProps> = ({
         >
           {HSL_CHANNELS.map((ch) => {
             const isActive = selectedHslChannel === ch.key;
-            const chVal = (hslState as Record<string, HSLAdjustment>)[ch.key] as HSLAdjustment | undefined;
+            const chVal = (hslState as unknown as Record<string, HSLAdjustment>)[ch.key] as HSLAdjustment | undefined;
             const hasValue = chVal && (chVal.hue !== 0 || chVal.saturation !== 0 || chVal.luminance !== 0);
             return (
               <div
