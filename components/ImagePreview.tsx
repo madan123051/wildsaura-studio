@@ -29,8 +29,11 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   const cropImgRef = useRef<HTMLImageElement>(null);
 
   const [imageLoaded, setImageLoaded] = useState(false);
-  const [showBefore, setShowBefore] = useState(false);
   const [cropView, setCropView] = useState({ scale: 1, panX: 0, panY: 0 });
+
+  /* ── Before/After slider state ── */
+  const [sliderPos, setSliderPos] = useState(0.5); // 0..1
+  const sliderDragging = useRef(false);
 
   const isCropping = cropState?.isActive === true;
   const hasProcessed = processedUrl !== null;
@@ -49,11 +52,10 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     const cH = cr.height - pad * 2;
     const imgAR = img.naturalWidth / img.naturalHeight;
     const ar = cropState?.aspect ? ASPECT_MAP[cropState.aspect] : null;
-    const fAR = ar ?? imgAR; // free → use image AR
+    const fAR = ar ?? imgAR;
     let fW: number, fH: number;
     if (fAR > cW / cH) { fW = cW; fH = cW / fAR; }
     else { fH = cH; fW = cH * fAR; }
-    // image "covers" frame at scale 1
     let iW: number, iH: number;
     if (imgAR > fAR) { iH = fH; iW = fH * imgAR; }
     else { iW = fW; iH = fW / imgAR; }
@@ -96,12 +98,11 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCropping, cropState?.aspect]);
 
-  /* ── Native crop gesture listeners ── */
+  /* ── Native crop gesture listeners (pinch + pan + wheel) ── */
   useEffect(() => {
     const el = cropFrameRef.current;
     if (!el || !isCropping) return;
 
-    // Mutable gesture state
     const g = {
       type: null as 'pan' | 'pinch' | null,
       scale: 1, panX: 0, panY: 0,
@@ -129,11 +130,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     /* Touch */
     const onTS = (e: TouchEvent) => {
       e.preventDefault();
-      if (e.touches.length === 1) {
-        g.type = 'pan';
-        g.sX = e.touches[0].clientX; g.sY = e.touches[0].clientY;
-        g.sPanX = g.panX; g.sPanY = g.panY;
-      } else if (e.touches.length >= 2) {
+      e.stopPropagation();
+      if (e.touches.length >= 2) {
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         g.type = 'pinch';
@@ -142,33 +140,44 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         g.sPanX = g.panX; g.sPanY = g.panY;
         g.sMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
         g.sMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      } else if (e.touches.length === 1) {
+        g.type = 'pan';
+        g.sX = e.touches[0].clientX; g.sY = e.touches[0].clientY;
+        g.sPanX = g.panX; g.sPanY = g.panY;
       }
     };
 
     const onTM = (e: TouchEvent) => {
       e.preventDefault();
-      if (g.type === 'pan' && e.touches.length === 1) {
-        const dx = e.touches[0].clientX - g.sX;
-        const dy = e.touches[0].clientY - g.sY;
-        const [cx, cy] = fnRef.current.clampPan(g.sPanX + dx, g.sPanY + dy, g.scale);
-        g.panX = cx; g.panY = cy;
-        applyTransform();
-      } else if (g.type === 'pinch' && e.touches.length >= 2) {
+      e.stopPropagation();
+      if (g.type === 'pinch' && e.touches.length >= 2) {
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const ns = Math.max(1, Math.min(5, g.sScale * (dist / g.sDist)));
         const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
         const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        const [cx, cy] = fnRef.current.clampPan(g.sPanX + (mx - g.sMidX), g.sPanY + (my - g.sMidY), ns);
+        const [cx, cy] = fnRef.current.clampPan(
+          g.sPanX + (mx - g.sMidX),
+          g.sPanY + (my - g.sMidY),
+          ns
+        );
         g.scale = ns; g.panX = cx; g.panY = cy;
+        applyTransform();
+      } else if (g.type === 'pan' && e.touches.length === 1) {
+        const dx = e.touches[0].clientX - g.sX;
+        const dy = e.touches[0].clientY - g.sY;
+        const [cx, cy] = fnRef.current.clampPan(g.sPanX + dx, g.sPanY + dy, g.scale);
+        g.panX = cx; g.panY = cy;
         applyTransform();
       }
     };
 
     const onTE = (e: TouchEvent) => {
+      e.preventDefault();
       if (e.touches.length === 0) { g.type = null; commit(); }
       else if (e.touches.length === 1) {
+        // Transitioned from pinch → pan
         g.type = 'pan';
         g.sX = e.touches[0].clientX; g.sY = e.touches[0].clientY;
         g.sPanX = g.panX; g.sPanY = g.panY;
@@ -210,7 +219,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
 
     el.addEventListener('touchstart', onTS, { passive: false });
     el.addEventListener('touchmove', onTM, { passive: false });
-    el.addEventListener('touchend', onTE);
+    el.addEventListener('touchend', onTE, { passive: false });
+    el.addEventListener('touchcancel', onTE, { passive: false });
     el.addEventListener('wheel', onW, { passive: false });
     el.addEventListener('mousedown', onMD);
     window.addEventListener('mousemove', onMM);
@@ -220,6 +230,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       el.removeEventListener('touchstart', onTS);
       el.removeEventListener('touchmove', onTM);
       el.removeEventListener('touchend', onTE);
+      el.removeEventListener('touchcancel', onTE);
       el.removeEventListener('wheel', onW);
       el.removeEventListener('mousedown', onMD);
       window.removeEventListener('mousemove', onMM);
@@ -227,39 +238,101 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     };
   }, [isCropping]);
 
-  /* ── Before / After hold handlers ── */
-  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleHoldStart = useCallback(() => {
-    if (!hasProcessed || isCropping) return;
-    holdTimer.current = setTimeout(() => setShowBefore(true), 80);
-  }, [hasProcessed, isCropping]);
+  /* ── Before/After slider native listeners ── */
+  useEffect(() => {
+    const c = containerRef.current;
+    if (!c || isCropping || !hasProcessed || !imageLoaded) return;
 
-  const handleHoldEnd = useCallback(() => {
-    if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; }
-    setShowBefore(false);
-  }, []);
+    const getPos = (clientX: number): number => {
+      const rect = c.getBoundingClientRect();
+      return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest('[data-slider-handle]')) return;
+      e.preventDefault();
+      sliderDragging.current = true;
+      setSliderPos(getPos(e.touches[0].clientX));
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!sliderDragging.current) return;
+      e.preventDefault();
+      setSliderPos(getPos(e.touches[0].clientX));
+    };
+
+    const onTouchEnd = () => { sliderDragging.current = false; };
+
+    const onMouseDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest('[data-slider-handle]')) return;
+      e.preventDefault();
+      sliderDragging.current = true;
+      setSliderPos(getPos(e.clientX));
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!sliderDragging.current) return;
+      setSliderPos(getPos(e.clientX));
+    };
+
+    const onMouseUp = () => { sliderDragging.current = false; };
+
+    c.addEventListener('touchstart', onTouchStart, { passive: false });
+    c.addEventListener('touchmove', onTouchMove, { passive: false });
+    c.addEventListener('touchend', onTouchEnd);
+    c.addEventListener('touchcancel', onTouchEnd);
+    c.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      c.removeEventListener('touchstart', onTouchStart);
+      c.removeEventListener('touchmove', onTouchMove);
+      c.removeEventListener('touchend', onTouchEnd);
+      c.removeEventListener('touchcancel', onTouchEnd);
+      c.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [isCropping, hasProcessed, imageLoaded]);
 
   /* ── Computed frame info for render ── */
   const fi = imageLoaded && isCropping ? getFrameInfo() : null;
 
+  /* ── Compute image display rect for slider clipping ── */
+  const getImgRect = useCallback(() => {
+    const c = containerRef.current;
+    const img = imgRef.current;
+    if (!c || !img || !img.naturalWidth) return null;
+    const cr = c.getBoundingClientRect();
+    const imgAR = img.naturalWidth / img.naturalHeight;
+    const cAR = cr.width / cr.height;
+    let w: number, h: number;
+    if (imgAR > cAR) { w = cr.width; h = cr.width / imgAR; }
+    else { h = cr.height; w = cr.height * imgAR; }
+    return {
+      left: (cr.width - w) / 2,
+      top: (cr.height - h) / 2,
+      width: w,
+      height: h,
+    };
+  }, []);
+
   return (
     <div
       ref={containerRef}
-      onMouseDown={!isCropping ? handleHoldStart : undefined}
-      onMouseUp={!isCropping ? handleHoldEnd : undefined}
-      onMouseLeave={!isCropping ? handleHoldEnd : undefined}
-      onTouchStart={!isCropping ? handleHoldStart : undefined}
-      onTouchEnd={!isCropping ? handleHoldEnd : undefined}
-      onTouchCancel={!isCropping ? handleHoldEnd : undefined}
       style={{
         position: 'relative', width: '100%', height: '100%',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         overflow: 'hidden', borderRadius: 8,
         userSelect: 'none',
+        touchAction: isCropping ? 'none' : 'auto',
         background: isCropping ? '#000' : 'transparent',
       }}
     >
-      {/* ── Dimension-source image (also the visible image when NOT cropping) ── */}
+      {/* ── Dimension-source image (visible when NOT cropping) ── */}
       <img
         ref={imgRef}
         src={originalUrl}
@@ -271,24 +344,104 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         } : {
           maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
           opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.3s',
+          ...(hasProcessed ? {
+            clipPath: `inset(0 ${(1 - sliderPos) * 100}% 0 0)`,
+          } : {}),
         }}
       />
 
-      {/* ── Processed overlay (fades on hold) ── */}
-      {!isCropping && processedUrl && imageLoaded && (
-        <img
-          src={processedUrl}
-          alt=""
-          draggable={false}
-          style={{
-            position: 'absolute',
-            maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
-            opacity: showBefore ? 0 : 1,
-            transition: 'opacity 0.15s ease',
-            pointerEvents: 'none',
-          }}
-        />
-      )}
+      {/* ── Processed overlay (clipped from right of slider) ── */}
+      {!isCropping && processedUrl && imageLoaded && (() => {
+        return (
+          <img
+            src={processedUrl}
+            alt=""
+            draggable={false}
+            style={{
+              position: 'absolute',
+              maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+              clipPath: `inset(0 0 0 ${sliderPos * 100}%)`,
+              pointerEvents: 'none',
+            }}
+          />
+        );
+      })()}
+
+      {/* ── Slider divider line + handle ── */}
+      {!isCropping && hasProcessed && imageLoaded && (() => {
+        const ir = getImgRect();
+        if (!ir) return null;
+        const lineX = ir.left + ir.width * sliderPos;
+        return (
+          <>
+            {/* Vertical line */}
+            <div
+              style={{
+                position: 'absolute',
+                left: lineX - 1,
+                top: ir.top,
+                width: 2,
+                height: ir.height,
+                background: '#fff',
+                boxShadow: '0 0 6px rgba(0,0,0,0.5)',
+                zIndex: 5,
+                pointerEvents: 'none',
+              }}
+            />
+            {/* Drag handle (circle with arrows) */}
+            <div
+              data-slider-handle="true"
+              style={{
+                position: 'absolute',
+                left: lineX - 18,
+                top: ir.top + ir.height / 2 - 18,
+                width: 36,
+                height: 36,
+                borderRadius: '50%',
+                background: 'rgba(255,255,255,0.95)',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 6,
+                cursor: 'ew-resize',
+                touchAction: 'none',
+              }}
+            >
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M6 10L2 10M2 10L5 7M2 10L5 13" stroke="#333" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M14 10L18 10M18 10L15 7M18 10L15 13" stroke="#333" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+
+            {/* Before / After labels */}
+            <div style={{
+              position: 'absolute',
+              left: ir.left + 8,
+              top: ir.top + 8,
+              padding: '3px 8px', borderRadius: 4,
+              background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
+              fontSize: 10, fontWeight: 600, color: '#fff',
+              letterSpacing: 0.5, textTransform: 'uppercase',
+              pointerEvents: 'none', zIndex: 5,
+            }}>
+              Before
+            </div>
+            <div style={{
+              position: 'absolute',
+              right: (containerRef.current ? containerRef.current.getBoundingClientRect().width - ir.left - ir.width : 0) + 8,
+              top: ir.top + 8,
+              padding: '3px 8px', borderRadius: 4,
+              background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
+              fontSize: 10, fontWeight: 600, color: '#fff',
+              letterSpacing: 0.5, textTransform: 'uppercase',
+              pointerEvents: 'none', zIndex: 5,
+            }}>
+              After
+            </div>
+          </>
+        );
+      })()}
 
       {/* ══════════ CROP MODE ══════════ */}
       {isCropping && fi && imageLoaded && (
@@ -386,27 +539,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
             ✂️ Pinch to zoom · Drag to move
           </div>
         </>
-      )}
-
-      {/* ── Before/After badge ── */}
-      {!isCropping && hasProcessed && imageLoaded && (
-        <div style={{
-          position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
-          padding: '6px 16px', borderRadius: 20,
-          background: showBefore ? 'rgba(239,68,68,0.5)' : 'rgba(0,0,0,0.5)',
-          backdropFilter: 'blur(8px)',
-          fontSize: 10, fontWeight: 600, color: '#fff',
-          letterSpacing: 0.5, textTransform: 'uppercase',
-          pointerEvents: 'none', transition: 'background 0.2s',
-          display: 'flex', alignItems: 'center', gap: 6, zIndex: 5,
-        }}>
-          <span style={{
-            width: 6, height: 6, borderRadius: '50%',
-            background: showBefore ? '#ef4444' : '#6366f1',
-            transition: 'background 0.2s',
-          }} />
-          {showBefore ? 'Before' : 'Hold to compare'}
-        </div>
       )}
 
       {/* ── No comparison message ── */}
