@@ -6,9 +6,9 @@ interface FileItem {
   name: string;
   status: 'pending' | 'processing' | 'done' | 'error';
   originalSize: number;
-  width: number;
-  height: number;
-  thumbnailUrl: string;
+  width?: number;
+  height?: number;
+  thumbnailUrl?: string;
   convertedBlob?: Blob;
   convertedSize?: number;
   error?: string;
@@ -313,6 +313,7 @@ const CatalogView: React.FC<CatalogViewProps> = ({
       >
         {/* Thumbnail */}
         <div style={{ position: 'relative', paddingBottom: '70%', overflow: 'hidden' }}>
+          {file.thumbnailUrl ? (
           <img
             src={file.thumbnailUrl}
             alt={file.name}
@@ -324,6 +325,9 @@ const CatalogView: React.FC<CatalogViewProps> = ({
               objectFit: 'cover',
             }}
           />
+          ) : (
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.2)', fontSize: 10 }}>No Preview</div>
+          )}
 
           {/* Selected checkmark */}
           {isSelected && (
@@ -425,7 +429,7 @@ const CatalogView: React.FC<CatalogViewProps> = ({
                 {file.name}
               </div>
               <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', marginTop: 1 }}>
-                {file.width}×{file.height} · {formatBytes(file.originalSize)}
+                {file.width ?? 0}×{file.height ?? 0} · {formatBytes(file.originalSize)}
               </div>
             </div>
           )}
@@ -466,6 +470,7 @@ const CatalogView: React.FC<CatalogViewProps> = ({
         }}
       >
         {/* Small thumbnail */}
+        {file.thumbnailUrl ? (
         <img
           src={file.thumbnailUrl}
           alt={file.name}
@@ -477,6 +482,9 @@ const CatalogView: React.FC<CatalogViewProps> = ({
             flexShrink: 0,
           }}
         />
+        ) : (
+        <div style={{ width: 40, height: 30, borderRadius: 4, flexShrink: 0, background: 'rgba(255,255,255,0.04)' }} />
+        )}
         {/* Filename */}
         <div
           style={{
@@ -500,7 +508,7 @@ const CatalogView: React.FC<CatalogViewProps> = ({
             flexShrink: 0,
           }}
         >
-          {file.width}×{file.height}
+          {file.width ?? 0}×{file.height ?? 0}
         </div>
         {/* Size */}
         <div
@@ -819,7 +827,7 @@ const CatalogView: React.FC<CatalogViewProps> = ({
                 {selectedFile.name}
               </span>
               <span>
-                {selectedFile.width}×{selectedFile.height}
+                {selectedFile.width ?? 0}×{selectedFile.height ?? 0}
               </span>
               <span>{formatBytes(selectedFile.originalSize)}</span>
             </>

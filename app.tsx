@@ -349,8 +349,8 @@ const WildSauraApp: React.FC = () => {
         }
 
         // Apply LUT last
-        if (hasLut) {
-          applyLUT(data, activeLut!.data, activeLut!.size, intensity / 100);
+        if (hasLut && activeLut?.data) {
+          applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
         }
 
         ctx.putImageData(imageData, 0, 0);
@@ -486,8 +486,8 @@ const WildSauraApp: React.FC = () => {
         }
 
         // Apply LUT last
-        if (hasLut) {
-          applyLUT(data, activeLut!.data, activeLut!.size, intensity / 100);
+        if (hasLut && activeLut?.data) {
+          applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
         }
 
         ctx.putImageData(imageData, 0, 0);

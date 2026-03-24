@@ -4,11 +4,11 @@ import type { LUTPreset } from './LUTPanel';
 
 interface ConversionSettingsData {
   quality: number;
-  resizeTo4K: boolean;
-  losslessWebP: boolean;
-  smartNaming: boolean;
+  resize4k: boolean;
+  lossless: boolean;
+  smartName: boolean;
   keepExif: boolean;
-  autoConvertOnDrop: boolean;
+  autoConvert: boolean;
 }
 
 interface EditPanelProps {
@@ -405,7 +405,7 @@ const EditPanel: React.FC<EditPanelProps> = ({
 
   const updateHsl = useCallback(
     (channel: string, field: keyof HSLAdjustment, value: number) => {
-      const current = hslState[channel] || { hue: 0, saturation: 0, luminance: 0 };
+      const current = (hslState as Record<string, HSLAdjustment>)[channel] || { hue: 0, saturation: 0, luminance: 0 };
       onHSLChange({
         ...hslState,
         [channel]: { ...current, [field]: value },
@@ -460,7 +460,7 @@ const EditPanel: React.FC<EditPanelProps> = ({
 
   const exportNonZero = false;
 
-  const currentHsl: HSLAdjustment = hslState[selectedHslChannel] || {
+  const currentHsl: HSLAdjustment = (hslState as Record<string, HSLAdjustment>)[selectedHslChannel] || {
     hue: 0,
     saturation: 0,
     luminance: 0,
@@ -477,8 +477,9 @@ const EditPanel: React.FC<EditPanelProps> = ({
       onAddCustomLut({
         id: `custom-${Date.now()}`,
         name: file.name.replace('.cube', ''),
-        category: 'custom',
-        data: text,
+        data: null,
+        size: 0,
+        isCustom: true,
       } as LUTPreset);
     };
     reader.readAsText(file);
@@ -630,7 +631,7 @@ const EditPanel: React.FC<EditPanelProps> = ({
         >
           {HSL_CHANNELS.map((ch) => {
             const isActive = selectedHslChannel === ch.key;
-            const chVal = hslState[ch.key] as HSLAdjustment | undefined;
+            const chVal = (hslState as Record<string, HSLAdjustment>)[ch.key] as HSLAdjustment | undefined;
             const hasValue = chVal && (chVal.hue !== 0 || chVal.saturation !== 0 || chVal.luminance !== 0);
             return (
               <div
@@ -786,11 +787,11 @@ const EditPanel: React.FC<EditPanelProps> = ({
           onChange={(v) => updateSettings({ quality: v })}
           centered={false}
         />
-        <Toggle label="Resize to 4K max" checked={settings.resizeTo4K} onChange={(v) => updateSettings({ resizeTo4K: v })} />
-        <Toggle label="Lossless WebP" checked={settings.losslessWebP} onChange={(v) => updateSettings({ losslessWebP: v })} />
-        <Toggle label="Smart naming" checked={settings.smartNaming} onChange={(v) => updateSettings({ smartNaming: v })} />
+        <Toggle label="Resize to 4K max" checked={settings.resize4k} onChange={(v) => updateSettings({ resize4k: v })} />
+        <Toggle label="Lossless WebP" checked={settings.lossless} onChange={(v) => updateSettings({ lossless: v })} />
+        <Toggle label="Smart naming" checked={settings.smartName} onChange={(v) => updateSettings({ smartName: v })} />
         <Toggle label="Keep EXIF" checked={settings.keepExif} onChange={(v) => updateSettings({ keepExif: v })} />
-        <Toggle label="Auto-convert on drop" checked={settings.autoConvertOnDrop} onChange={(v) => updateSettings({ autoConvertOnDrop: v })} />
+        <Toggle label="Auto-convert on drop" checked={settings.autoConvert} onChange={(v) => updateSettings({ autoConvert: v })} />
 
         {/* Stats */}
         {fileStats.total > 0 && (
@@ -853,7 +854,6 @@ const EditPanel: React.FC<EditPanelProps> = ({
             padding: '7px 0',
             marginTop: 4,
             borderRadius: 6,
-            border: 'none',
             fontWeight: 600,
             fontSize: 11,
             cursor: fileStats.done === 0 ? 'not-allowed' : 'pointer',
