@@ -15,8 +15,8 @@ import type { LUTPreset } from './components/LUTPanel';
 import EditPanel from './components/EditPanel';
 import PresetsPanel from './components/PresetsPanel';
 import CatalogView from './components/CatalogView';
-import { DEFAULT_ADJUSTMENTS, DEFAULT_HSL_STATE } from './types';
-import type { EditAdjustments, HSLState } from './types';
+import { DEFAULT_ADJUSTMENTS, DEFAULT_HSL_STATE, DEFAULT_CROP_STATE } from './types';
+import type { EditAdjustments, HSLState, CropState, CropRect } from './types';
 import * as editing from './utils/imageEditing';
 import { BUILT_IN_PRESETS } from './utils/presetData';
 import { applyLUT } from './utils/imageProcessor';
@@ -243,6 +243,7 @@ const WildSauraApp: React.FC = () => {
   const [adjustments, setAdjustments] = useState<EditAdjustments>({ ...DEFAULT_ADJUSTMENTS });
   const [hslState, setHslState] = useState<HSLState>({ ...DEFAULT_HSL_STATE });
   const [activePresetId, setActivePresetId] = useState<string | null>(null);
+  const [cropState, setCropState] = useState<CropState>({ ...DEFAULT_CROP_STATE });
 
   // ── Settings ──
   const [settings, setSettings] = useState<ConversionSettingsData>({
@@ -302,21 +303,43 @@ const WildSauraApp: React.FC = () => {
       const hasAdjustments = Object.entries(adjustments).some(([_, v]) => v !== 0);
       const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
       const hasLut = activeLut && activeLut.data;
+      const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
 
       if (file.status === 'done' && file.convertedBlob) {
         const url = URL.createObjectURL(file.convertedBlob);
         setPreviewProcessed(url);
-      } else if (hasAdjustments || hasHSL || hasLut) {
+      } else if (hasAdjustments || hasHSL || hasLut || hasCrop) {
         let img = imageCache.current.get(file.id);
         if (!img) {
           img = await loadImage(dataUrl);
           imageCache.current.set(file.id, img);
         }
+
+        let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
+        let srcW = img.width;
+        let srcH = img.height;
+
+        // Apply crop first
+        if (hasCrop) {
+          const cropX = Math.round(cropState.rect.x * img.naturalWidth);
+          const cropY = Math.round(cropState.rect.y * img.naturalHeight);
+          const cropW = Math.round(cropState.rect.width * img.naturalWidth);
+          const cropH = Math.round(cropState.rect.height * img.naturalHeight);
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = cropW;
+          tempCanvas.height = cropH;
+          const tempCtx = tempCanvas.getContext('2d')!;
+          tempCtx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+          srcCanvas = tempCanvas;
+          srcW = cropW;
+          srcH = cropH;
+        }
+
         const canvas = document.createElement('canvas');
-        canvas.width = Math.min(img.width, 800);
-        canvas.height = Math.round(img.height * (canvas.width / img.width));
+        canvas.width = Math.min(srcW, 800);
+        canvas.height = Math.round(srcH * (canvas.width / srcW));
         const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(srcCanvas, 0, 0, canvas.width, canvas.height);
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const { data } = imageData;
@@ -361,7 +384,7 @@ const WildSauraApp: React.FC = () => {
     } catch (err) {
       console.error('Preview error:', err);
     }
-  }, [activeLut, intensity, adjustments, hslState]);
+  }, [activeLut, intensity, adjustments, hslState, cropState]);
 
   // ── Update preview when selection, LUT, or adjustments change ──
   useEffect(() => {
@@ -371,7 +394,7 @@ const WildSauraApp: React.FC = () => {
       setPreviewOriginal(null);
       setPreviewProcessed(null);
     }
-  }, [selectedFile, activeLutId, intensity, adjustments, hslState, generatePreview]);
+  }, [selectedFile, activeLutId, intensity, adjustments, hslState, cropState, generatePreview]);
 
   // ── Handle files added ──
   const handleFilesAdded = useCallback(async (newFiles: File[]) => {
@@ -436,9 +459,27 @@ const WildSauraApp: React.FC = () => {
         imageCache.current.set(fileId, img);
       }
 
-      // Create canvas — apply resize4k BEFORE adjustments
+      // Apply crop first, then resize4k
+      const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
+      let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
       let w = img.naturalWidth;
       let h = img.naturalHeight;
+
+      if (hasCrop) {
+        const cropX = Math.round(cropState.rect.x * img.naturalWidth);
+        const cropY = Math.round(cropState.rect.y * img.naturalHeight);
+        const cropW = Math.round(cropState.rect.width * img.naturalWidth);
+        const cropH = Math.round(cropState.rect.height * img.naturalHeight);
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = cropW;
+        tempCanvas.height = cropH;
+        const tempCtx = tempCanvas.getContext('2d')!;
+        tempCtx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        srcCanvas = tempCanvas;
+        w = cropW;
+        h = cropH;
+      }
+
       if (settings.resize4k && w > 3840) {
         const scale = 3840 / w;
         w = 3840;
@@ -449,7 +490,7 @@ const WildSauraApp: React.FC = () => {
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(img, 0, 0, w, h);
+      ctx.drawImage(srcCanvas, 0, 0, w, h);
 
       // Apply adjustments at full resolution
       const hasAdjustments = Object.entries(adjustments).some(([_, v]) => v !== 0);
@@ -558,7 +599,7 @@ const WildSauraApp: React.FC = () => {
       );
       showToast(`Error: ${err.message || 'Conversion failed'}`, 'error');
     }
-  }, [files, activeLut, intensity, settings, user, showToast, adjustments, hslState]);
+  }, [files, activeLut, intensity, settings, user, showToast, adjustments, hslState, cropState]);
 
   // ── Process all pending ──
   const processAll = useCallback(async () => {
@@ -670,10 +711,21 @@ const WildSauraApp: React.FC = () => {
     showToast(`Applied preset: ${preset?.name || 'Custom'}`, 'success');
   }, [showToast]);
 
+  // ── Crop handlers ──
+  const handleCropRectChange = useCallback((rect: CropRect) => {
+    setCropState(prev => ({ ...prev, rect }));
+  }, []);
+
+  const handleApplyCrop = useCallback(() => {
+    setCropState(prev => ({ ...prev, isActive: false }));
+    showToast('Crop applied', 'success');
+  }, [showToast]);
+
   // ── Reset adjustments (NEW) ──
   const resetAdjustments = useCallback(() => {
     setAdjustments({ ...DEFAULT_ADJUSTMENTS });
     setHslState({ ...DEFAULT_HSL_STATE });
+    setCropState({ ...DEFAULT_CROP_STATE });
     setActivePresetId(null);
     showToast('Reset all adjustments', 'info');
   }, [showToast]);
@@ -852,6 +904,8 @@ const WildSauraApp: React.FC = () => {
                       originalUrl={previewOriginal}
                       processedUrl={previewProcessed}
                       fileName={selectedFile.name}
+                      cropState={cropState}
+                      onCropChange={handleCropRectChange}
                     />
                   </div>
                 ) : null}
@@ -888,6 +942,8 @@ const WildSauraApp: React.FC = () => {
                     originalUrl={previewOriginal}
                     processedUrl={previewProcessed}
                     fileName={selectedFile.name}
+                    cropState={cropState}
+                    onCropChange={handleCropRectChange}
                   />
                 </div>
               )}
@@ -968,6 +1024,8 @@ const WildSauraApp: React.FC = () => {
                       originalUrl={previewOriginal}
                       processedUrl={previewProcessed}
                       fileName={selectedFile.name}
+                      cropState={cropState}
+                      onCropChange={handleCropRectChange}
                     />
                   ) : (
                     <div style={{
@@ -1032,6 +1090,9 @@ const WildSauraApp: React.FC = () => {
                     isProcessingAll={isProcessingAll}
                     fileStats={fileStats}
                     onResetAdjustments={resetAdjustments}
+                    cropState={cropState}
+                    onCropStateChange={setCropState}
+                    onApplyCrop={handleApplyCrop}
                   />
                 </aside>
               )}
@@ -1064,6 +1125,8 @@ const WildSauraApp: React.FC = () => {
                     originalUrl={previewOriginal}
                     processedUrl={previewProcessed}
                     fileName={selectedFile.name}
+                    cropState={cropState}
+                    onCropChange={handleCropRectChange}
                   />
                 ) : (
                   <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>
@@ -1118,6 +1181,9 @@ const WildSauraApp: React.FC = () => {
                     isProcessingAll={isProcessingAll}
                     fileStats={fileStats}
                     onResetAdjustments={resetAdjustments}
+                    cropState={cropState}
+                    onCropStateChange={setCropState}
+                    onApplyCrop={handleApplyCrop}
                   />
                 </div>
               )}

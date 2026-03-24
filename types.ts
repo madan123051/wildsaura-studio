@@ -163,3 +163,19 @@ export const DEFAULT_HSL_STATE: HSLState = {
 };
 
 export type CropAspect = 'free' | '1:1' | '4:3' | '3:2' | '16:9' | '9:16' | '5:4';
+
+export interface CropRect {
+  x: number;      // 0-1 percentage from left
+  y: number;      // 0-1 percentage from top
+  width: number;  // 0-1 percentage width
+  height: number; // 0-1 percentage height
+}
+
+export interface CropState {
+  rect: CropRect;
+  aspect: CropAspect;
+  isActive: boolean;
+}
+
+export const DEFAULT_CROP_RECT: CropRect = { x: 0, y: 0, width: 1, height: 1 };
+export const DEFAULT_CROP_STATE: CropState = { rect: { ...DEFAULT_CROP_RECT }, aspect: 'free', isActive: false };

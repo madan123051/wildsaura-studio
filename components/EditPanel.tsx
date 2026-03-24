@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import type { EditAdjustments, HSLState, HSLAdjustment } from '../types';
+import type { EditAdjustments, HSLState, HSLAdjustment, CropState, CropAspect } from '../types';
+import { DEFAULT_CROP_STATE, DEFAULT_CROP_RECT } from '../types';
 import type { LUTPreset } from './LUTPanel';
 
 interface ConversionSettingsData {
@@ -31,6 +32,9 @@ interface EditPanelProps {
   isProcessingAll: boolean;
   fileStats: { total: number; done: number; pending: number; totalBefore: number; totalAfter: number };
   onResetAdjustments: () => void;
+  cropState: CropState;
+  onCropStateChange: (state: CropState) => void;
+  onApplyCrop: () => void;
 }
 
 // ─── Internal Slider ────────────────────────────────────────────────────────
@@ -102,6 +106,7 @@ const Slider: React.FC<SliderProps> = ({ label, value, min, max, onChange, gradi
           display: 'flex',
           alignItems: 'center',
           cursor: 'pointer',
+          touchAction: 'none',
         }}
         onMouseDown={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
@@ -118,6 +123,27 @@ const Slider: React.FC<SliderProps> = ({ label, value, min, max, onChange, gradi
           };
           window.addEventListener('mousemove', onMove);
           window.addEventListener('mouseup', onUp);
+        }}
+        onTouchStart={(e) => {
+          e.preventDefault();
+          const touch = e.touches[0];
+          const rect = e.currentTarget.getBoundingClientRect();
+          const update = (clientX: number) => {
+            const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            const raw = min + ratio * range;
+            onChange(Math.round(raw));
+          };
+          update(touch.clientX);
+          const onTouchMove = (ev: TouchEvent) => {
+            ev.preventDefault();
+            update(ev.touches[0].clientX);
+          };
+          const onTouchEnd = () => {
+            window.removeEventListener('touchmove', onTouchMove);
+            window.removeEventListener('touchend', onTouchEnd);
+          };
+          window.addEventListener('touchmove', onTouchMove, { passive: false });
+          window.addEventListener('touchend', onTouchEnd);
         }}
       >
         {/* Track */}
@@ -384,6 +410,9 @@ const EditPanel: React.FC<EditPanelProps> = ({
   isProcessingAll,
   fileStats,
   onResetAdjustments,
+  cropState,
+  onCropStateChange,
+  onApplyCrop,
 }) => {
   const [selectedHslChannel, setSelectedHslChannel] = useState<string>('red');
 
@@ -412,6 +441,61 @@ const EditPanel: React.FC<EditPanelProps> = ({
       });
     },
     [hslState, onHSLChange]
+  );
+
+  const cropNonZero = useMemo(
+    () =>
+      cropState.rect.x !== 0 ||
+      cropState.rect.y !== 0 ||
+      cropState.rect.width !== 1 ||
+      cropState.rect.height !== 1,
+    [cropState.rect]
+  );
+
+  const ASPECT_OPTIONS: { label: string; value: CropAspect }[] = [
+    { label: 'Free', value: 'free' },
+    { label: '1:1', value: '1:1' },
+    { label: '4:3', value: '4:3' },
+    { label: '3:2', value: '3:2' },
+    { label: '16:9', value: '16:9' },
+    { label: '9:16', value: '9:16' },
+    { label: '5:4', value: '5:4' },
+  ];
+
+  const handleAspectChange = useCallback(
+    (aspect: CropAspect) => {
+      if (aspect === 'free') {
+        onCropStateChange({ ...cropState, aspect });
+        return;
+      }
+      // Parse aspect ratio
+      const ratioMap: Record<string, number> = {
+        '1:1': 1,
+        '4:3': 4 / 3,
+        '3:2': 3 / 2,
+        '16:9': 16 / 9,
+        '9:16': 9 / 16,
+        '5:4': 5 / 4,
+      };
+      const ratio = ratioMap[aspect] || 1;
+      // Fit new rect centered in current image (1x1 space)
+      let newW: number, newH: number;
+      if (ratio >= 1) {
+        newW = 1;
+        newH = 1 / ratio;
+      } else {
+        newH = 1;
+        newW = ratio;
+      }
+      const newX = (1 - newW) / 2;
+      const newY = (1 - newH) / 2;
+      onCropStateChange({
+        ...cropState,
+        aspect,
+        rect: { x: newX, y: newY, width: newW, height: newH },
+      });
+    },
+    [cropState, onCropStateChange]
   );
 
   const lightNonZero = useMemo(
@@ -505,6 +589,117 @@ const EditPanel: React.FC<EditPanelProps> = ({
         scrollbarColor: 'rgba(255,255,255,0.08) transparent',
       }}
     >
+      {/* ── Section 0: Crop ──────────────────────────────────── */}
+      <Section
+        title="Crop"
+        icon="✂️"
+        hasNonZero={cropNonZero || cropState.isActive}
+        onReset={() => {
+          onCropStateChange({ ...DEFAULT_CROP_STATE });
+        }}
+      >
+        {/* Aspect ratio selector */}
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 4,
+            padding: '4px 0 8px',
+          }}
+        >
+          {ASPECT_OPTIONS.map((opt) => {
+            const isActive = cropState.aspect === opt.value;
+            return (
+              <div
+                key={opt.value}
+                onClick={() => handleAspectChange(opt.value)}
+                style={{
+                  padding: '3px 10px',
+                  borderRadius: 12,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  background: isActive ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.05)',
+                  border: isActive ? '1px solid #6366f1' : '1px solid rgba(255,255,255,0.06)',
+                  color: isActive ? '#a78bfa' : 'rgba(255,255,255,0.5)',
+                  whiteSpace: 'nowrap',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {opt.label}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Toggle crop mode */}
+        <button
+          onClick={() =>
+            onCropStateChange({ ...cropState, isActive: !cropState.isActive })
+          }
+          style={{
+            width: '100%',
+            padding: '7px 0',
+            borderRadius: 6,
+            border: cropState.isActive
+              ? '1px solid rgba(239,68,68,0.3)'
+              : '1px solid rgba(99,102,241,0.3)',
+            background: cropState.isActive
+              ? 'rgba(239,68,68,0.1)'
+              : 'rgba(99,102,241,0.1)',
+            color: cropState.isActive ? '#f87171' : '#a78bfa',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all 0.15s',
+          }}
+        >
+          {cropState.isActive ? 'Cancel Crop' : 'Start Crop'}
+        </button>
+
+        {/* Apply Crop button */}
+        {cropState.isActive && cropNonZero && (
+          <button
+            onClick={onApplyCrop}
+            style={{
+              width: '100%',
+              padding: '7px 0',
+              marginTop: 4,
+              borderRadius: 6,
+              border: 'none',
+              background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+              color: '#fff',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            Apply Crop
+          </button>
+        )}
+
+        {/* Reset crop */}
+        {cropNonZero && (
+          <button
+            onClick={() => onCropStateChange({ ...DEFAULT_CROP_STATE })}
+            style={{
+              width: '100%',
+              padding: '5px 0',
+              marginTop: 4,
+              borderRadius: 4,
+              border: '1px solid rgba(255,255,255,0.06)',
+              background: 'transparent',
+              color: 'rgba(255,255,255,0.4)',
+              fontSize: 10,
+              cursor: 'pointer',
+            }}
+          >
+            Reset Crop
+          </button>
+        )}
+      </Section>
+
       {/* ── Section 1: Light ─────────────────────────────────── */}
       <Section
         title="Light"
