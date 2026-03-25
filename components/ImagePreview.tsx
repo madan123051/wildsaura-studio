@@ -42,25 +42,33 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   // Keep ref in sync for native listeners
   useEffect(() => { sliderPosRef.current = sliderPos; }, [sliderPos]);
 
-  /* ── Image load handling (with cache detection) ── */
+  /* ── Image load handling (robust with cache detection) ── */
+  const prevUrlRef = useRef(originalUrl);
   const handleImageLoad = useCallback(() => {
     setImageLoaded(true);
   }, []);
 
   useEffect(() => {
-    setImageLoaded(false);
-    // Check if image is already cached in browser
+    // Only reset imageLoaded when the URL actually changes (different file)
+    if (prevUrlRef.current !== originalUrl) {
+      prevUrlRef.current = originalUrl;
+      setImageLoaded(false);
+    }
+
+    // Check if image is already cached / complete in browser
     const checkCache = () => {
       const img = imgRef.current;
       if (img && img.complete && img.naturalWidth > 0) {
         setImageLoaded(true);
       }
     };
-    // Check immediately and after a tick (in case ref is not set yet)
+
+    // Check immediately, next frame, and after a short delay for safety
     checkCache();
     const raf = requestAnimationFrame(checkCache);
-    const timer = setTimeout(checkCache, 50);
-    return () => { cancelAnimationFrame(raf); clearTimeout(timer); };
+    const t1 = setTimeout(checkCache, 50);
+    const t2 = setTimeout(checkCache, 200);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t1); clearTimeout(t2); };
   }, [originalUrl]);
 
   /* ── Frame geometry helper ── */
@@ -123,14 +131,20 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCropping, cropState?.aspect]);
 
+  /* ── Ref to keep cropView in sync for native listeners ── */
+  const cropViewRef = useRef(cropView);
+  useEffect(() => { cropViewRef.current = cropView; }, [cropView]);
+
   /* ── Native crop gesture listeners (pinch + pan + wheel) ── */
   useEffect(() => {
     const el = cropFrameRef.current;
-    if (!el || !isCropping) return;
+    if (!el || !isCropping || !imageLoaded) return;
 
+    // Initialize from current React state so re-attaching keeps position
+    const cv = cropViewRef.current;
     const g = {
       type: null as 'pan' | 'pinch' | null,
-      scale: 1, panX: 0, panY: 0,
+      scale: cv.scale, panX: cv.panX, panY: cv.panY,
       sX: 0, sY: 0, sPanX: 0, sPanY: 0, sScale: 1, sDist: 0, sMidX: 0, sMidY: 0,
       mouseDown: false,
     };
@@ -260,7 +274,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       window.removeEventListener('mousemove', onMM);
       window.removeEventListener('mouseup', onMU);
     };
-  }, [isCropping]);
+  }, [isCropping, imageLoaded]);
 
   /* ── Before/After slider — ONLY activate near divider line ── */
   useEffect(() => {
