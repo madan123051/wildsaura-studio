@@ -37,6 +37,9 @@ interface EditPanelProps {
   onApplyCrop: () => void;
   transformState: TransformState;
   onTransformStateChange: (state: TransformState) => void;
+  onSaveEdit?: () => void;
+  isSavingEdit?: boolean;
+  isLoggedIn?: boolean;
 }
 
 // ─── Internal Slider ────────────────────────────────────────────────────────
@@ -417,6 +420,9 @@ const EditPanel: React.FC<EditPanelProps> = ({
   onApplyCrop,
   transformState,
   onTransformStateChange,
+  onSaveEdit,
+  isSavingEdit,
+  isLoggedIn,
 }) => {
   const [selectedHslChannel, setSelectedHslChannel] = useState<string>('red');
 
@@ -1052,6 +1058,40 @@ const EditPanel: React.FC<EditPanelProps> = ({
               </span>
             )}
           </div>
+        )}
+
+        {/* Save to Cloud (24h) */}
+        {onSaveEdit && (
+          <button
+            onClick={onSaveEdit}
+            disabled={isSavingEdit || !isLoggedIn}
+            title={!isLoggedIn ? 'Sign in to save edits to cloud' : 'Save current edit to cloud for 24 hours'}
+            style={{
+              width: '100%',
+              padding: '8px 0',
+              marginTop: 8,
+              borderRadius: 6,
+              border: 'none',
+              fontWeight: 600,
+              fontSize: 12,
+              cursor: isSavingEdit || !isLoggedIn ? 'not-allowed' : 'pointer',
+              background: isSavingEdit
+                ? 'linear-gradient(90deg, #f59e0b, #f97316)'
+                : !isLoggedIn
+                ? 'rgba(255,255,255,0.06)'
+                : 'linear-gradient(135deg, #f59e0b, #f97316)',
+              color: !isLoggedIn ? 'rgba(255,255,255,0.25)' : '#fff',
+              opacity: isSavingEdit ? 0.8 : 1,
+              animation: isSavingEdit ? 'pulse 1.5s ease-in-out infinite' : 'none',
+              transition: 'all 0.15s',
+            }}
+          >
+            {isSavingEdit
+              ? '☁️ Saving…'
+              : !isLoggedIn
+              ? '🔒 Sign in to Save'
+              : '☁️ Save to Cloud (24h)'}
+          </button>
         )}
 
         {/* Convert All */}

@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { getUserConversions, getUserStats, deleteConversion, ConversionRecord } from '../lib/database';
-import { Search, Trash2, Image, HardDrive, FolderOpen } from 'lucide-react';
+import { getUserEdits, deleteEdit, cleanupExpiredEdits, getTimeRemaining, EditRecord } from '../lib/editHistory';
+import { Search, Trash2, Image, HardDrive, FolderOpen, Cloud, Clock, Download } from 'lucide-react';
 
 interface DashboardProps {
   userId: string;
@@ -26,29 +27,63 @@ function formatDate(timestamp: number): string {
 
 export default function Dashboard({ userId }: DashboardProps) {
   const [records, setRecords] = useState<ConversionRecord[]>([]);
+  const [savedEdits, setSavedEdits] = useState<EditRecord[]>([]);
   const [stats, setStats] = useState({ totalImages: 0, totalSaved: 0 });
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [, setTick] = useState(0); // force re-render for countdown timers
 
   useEffect(() => {
     loadData();
   }, [userId]);
 
+  // Countdown timer: re-render every 60s to update "time remaining"
+  useEffect(() => {
+    if (savedEdits.length === 0) return;
+    const iv = setInterval(() => setTick(t => t + 1), 60_000);
+    return () => clearInterval(iv);
+  }, [savedEdits.length]);
+
   const loadData = async () => {
+    if (!userId) { setLoading(false); return; }
     setLoading(true);
     try {
-      const [conversions, userStats] = await Promise.all([
+      // Clean up expired edits first
+      await cleanupExpiredEdits(userId);
+
+      const [conversions, userStats, edits] = await Promise.all([
         getUserConversions(userId),
         getUserStats(userId),
+        getUserEdits(userId),
       ]);
       setRecords(conversions);
       setStats(userStats);
+      // Filter out expired (should already be cleaned, but just in case)
+      setSavedEdits(edits.filter(e => e.expiresAt > Date.now()));
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
     } finally {
       setLoading(false);
     }
   };
+
+  const handleDeleteEdit = useCallback(async (edit: EditRecord) => {
+    try {
+      await deleteEdit(userId, edit);
+      setSavedEdits(prev => prev.filter(e => e.id !== edit.id));
+    } catch (err) {
+      console.error('Failed to delete saved edit:', err);
+    }
+  }, [userId]);
+
+  const handleDownloadEdit = useCallback((edit: EditRecord) => {
+    const a = document.createElement('a');
+    a.href = edit.downloadUrl;
+    a.download = edit.fileName;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.click();
+  }, []);
 
   const handleDelete = async (conversionId: string) => {
     try {
@@ -296,6 +331,125 @@ export default function Dashboard({ userId }: DashboardProps) {
           </div>
         </div>
       </div>
+
+      {/* ── Saved Edits (24h Cloud) ── */}
+      {savedEdits.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <Cloud size={16} color="#f59e0b" />
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: '#e5e5e5', margin: 0 }}>
+              Saved Edits
+            </h3>
+            <span style={{
+              fontSize: 10, color: 'rgba(255,255,255,0.35)',
+              background: 'rgba(245,158,11,0.15)',
+              padding: '2px 8px', borderRadius: 10,
+            }}>
+              Auto-delete after 24h
+            </span>
+          </div>
+
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+            gap: 12,
+          }}>
+            {savedEdits.map((edit) => (
+              <div
+                key={edit.id}
+                style={{
+                  background: 'rgba(245,158,11,0.05)',
+                  border: '1px solid rgba(245,158,11,0.15)',
+                  borderRadius: 12,
+                  overflow: 'hidden',
+                  position: 'relative',
+                  transition: 'border-color 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(245,158,11,0.4)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = 'rgba(245,158,11,0.15)';
+                }}
+              >
+                {/* Thumbnail */}
+                <div style={{
+                  width: '100%', height: 140,
+                  background: 'rgba(0,0,0,0.3)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  overflow: 'hidden',
+                }}>
+                  <img
+                    src={edit.downloadUrl}
+                    alt={edit.fileName}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }}
+                  />
+                </div>
+
+                {/* Countdown badge */}
+                <div style={{
+                  position: 'absolute', top: 8, right: 8,
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  padding: '3px 8px', borderRadius: 8,
+                  background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
+                  fontSize: 10, fontWeight: 600, color: '#f59e0b',
+                }}>
+                  <Clock size={10} />
+                  {getTimeRemaining(edit.expiresAt)}
+                </div>
+
+                {/* Body */}
+                <div style={{ padding: '10px 12px' }}>
+                  <p style={{
+                    fontSize: 12, fontWeight: 600, color: '#e5e5e5',
+                    margin: '0 0 4px 0',
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  }}>
+                    {edit.fileName}
+                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>
+                    <span>{edit.width}×{edit.height}</span>
+                    <span>{(edit.fileSize / 1024).toFixed(0)} KB</span>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <button
+                      onClick={() => handleDownloadEdit(edit)}
+                      style={{
+                        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                        padding: '6px 0', borderRadius: 6,
+                        background: 'rgba(245,158,11,0.15)',
+                        border: '1px solid rgba(245,158,11,0.25)',
+                        color: '#f59e0b', fontSize: 11, fontWeight: 600,
+                        cursor: 'pointer', transition: 'all 0.15s',
+                      }}
+                    >
+                      <Download size={12} /> Download
+                    </button>
+                    <button
+                      onClick={() => handleDeleteEdit(edit)}
+                      style={{
+                        width: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        padding: '6px', borderRadius: 6,
+                        background: 'rgba(239,68,68,0.1)',
+                        border: '1px solid rgba(239,68,68,0.2)',
+                        color: '#f87171',
+                        cursor: 'pointer', transition: 'all 0.15s',
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div style={styles.searchContainer}>
