@@ -136,9 +136,20 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   useEffect(() => { cropViewRef.current = cropView; }, [cropView]);
 
   /* ── Native crop gesture listeners (pinch + pan + wheel) ── */
+  /*
+   * IMPORTANT: Touch listeners are on the CONTAINER, not the crop frame.
+   * When a user does a 2-finger pinch, the second finger often lands on
+   * the dark overlay (a sibling of the crop frame). Events from the
+   * overlay bubble to the container but NOT to the crop frame.
+   * By listening on the container we catch all touches regardless of
+   * which child element they start on.
+   *
+   * Mouse/wheel listeners stay on the crop frame for cursor styling.
+   */
   useEffect(() => {
+    const container = containerRef.current;
     const el = cropFrameRef.current;
-    if (!el || !isCropping || !imageLoaded) return;
+    if (!container || !isCropping || !imageLoaded) return;
 
     // Initialize from current React state so re-attaching keeps position
     const cv = cropViewRef.current;
@@ -166,19 +177,24 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       fnRef.current.emitCropRect(g.scale, g.panX, g.panY);
     };
 
-    /* Touch */
+    /* Helper: initialize pinch state from current touches */
+    const initPinch = (e: TouchEvent) => {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      g.type = 'pinch';
+      g.sDist = Math.sqrt(dx * dx + dy * dy) || 1;
+      g.sScale = g.scale;
+      g.sPanX = g.panX; g.sPanY = g.panY;
+      g.sMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      g.sMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    };
+
+    /* Touch — on CONTAINER for full coverage */
     const onTS = (e: TouchEvent) => {
       e.preventDefault();
       e.stopPropagation();
       if (e.touches.length >= 2) {
-        const dx = e.touches[0].clientX - e.touches[1].clientX;
-        const dy = e.touches[0].clientY - e.touches[1].clientY;
-        g.type = 'pinch';
-        g.sDist = Math.sqrt(dx * dx + dy * dy) || 1;
-        g.sScale = g.scale;
-        g.sPanX = g.panX; g.sPanY = g.panY;
-        g.sMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        g.sMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        initPinch(e);
       } else if (e.touches.length === 1) {
         g.type = 'pan';
         g.sX = e.touches[0].clientX; g.sY = e.touches[0].clientY;
@@ -189,6 +205,16 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     const onTM = (e: TouchEvent) => {
       e.preventDefault();
       e.stopPropagation();
+
+      /* Auto-upgrade pan → pinch when second finger appears mid-gesture.
+         This catches the case where the second finger started on a sibling
+         element (dark overlay) whose touchstart didn't fire on the container
+         directly, but touchmove still reports all active touches. */
+      if (e.touches.length >= 2 && g.type !== 'pinch') {
+        initPinch(e);
+        return;
+      }
+
       if (g.type === 'pinch' && e.touches.length >= 2) {
         const dx = e.touches[0].clientX - e.touches[1].clientX;
         const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -223,13 +249,16 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       }
     };
 
-    /* Mouse */
+    /* Prevent Safari native gesture (pinch-to-zoom page) */
+    const preventGesture = (e: Event) => { e.preventDefault(); };
+
+    /* Mouse — on crop frame for cursor */
     const onMD = (e: MouseEvent) => {
       e.preventDefault();
       g.mouseDown = true;
       g.sX = e.clientX; g.sY = e.clientY;
       g.sPanX = g.panX; g.sPanY = g.panY;
-      el.style.cursor = 'grabbing';
+      if (el) el.style.cursor = 'grabbing';
     };
 
     const onMM = (e: MouseEvent) => {
@@ -242,10 +271,10 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     };
 
     const onMU = () => {
-      if (g.mouseDown) { g.mouseDown = false; el.style.cursor = 'grab'; commit(); }
+      if (g.mouseDown) { g.mouseDown = false; if (el) el.style.cursor = 'grab'; commit(); }
     };
 
-    /* Wheel */
+    /* Wheel — on container */
     const onW = (e: WheelEvent) => {
       e.preventDefault();
       const ns = Math.max(1, Math.min(5, g.scale - e.deltaY * 0.003));
@@ -255,22 +284,33 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       commit();
     };
 
-    el.addEventListener('touchstart', onTS, { passive: false });
-    el.addEventListener('touchmove', onTM, { passive: false });
-    el.addEventListener('touchend', onTE, { passive: false });
-    el.addEventListener('touchcancel', onTE, { passive: false });
-    el.addEventListener('wheel', onW, { passive: false });
-    el.addEventListener('mousedown', onMD);
+    /* Attach — touch on container, mouse/wheel on crop frame */
+    container.addEventListener('touchstart', onTS, { passive: false });
+    container.addEventListener('touchmove', onTM, { passive: false });
+    container.addEventListener('touchend', onTE, { passive: false });
+    container.addEventListener('touchcancel', onTE, { passive: false });
+    container.addEventListener('wheel', onW, { passive: false });
+    // Safari gesture prevention
+    container.addEventListener('gesturestart', preventGesture, { passive: false } as any);
+    container.addEventListener('gesturechange', preventGesture, { passive: false } as any);
+
+    if (el) {
+      el.addEventListener('mousedown', onMD);
+    }
     window.addEventListener('mousemove', onMM);
     window.addEventListener('mouseup', onMU);
 
     return () => {
-      el.removeEventListener('touchstart', onTS);
-      el.removeEventListener('touchmove', onTM);
-      el.removeEventListener('touchend', onTE);
-      el.removeEventListener('touchcancel', onTE);
-      el.removeEventListener('wheel', onW);
-      el.removeEventListener('mousedown', onMD);
+      container.removeEventListener('touchstart', onTS);
+      container.removeEventListener('touchmove', onTM);
+      container.removeEventListener('touchend', onTE);
+      container.removeEventListener('touchcancel', onTE);
+      container.removeEventListener('wheel', onW);
+      container.removeEventListener('gesturestart', preventGesture as any);
+      container.removeEventListener('gesturechange', preventGesture as any);
+      if (el) {
+        el.removeEventListener('mousedown', onMD);
+      }
       window.removeEventListener('mousemove', onMM);
       window.removeEventListener('mouseup', onMU);
     };
@@ -495,8 +535,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       {/* CROP MODE */}
       {isCropping && fi && imageLoaded && (
         <>
-          {/* Dark background */}
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1 }} />
+          {/* Dark background — pointerEvents:none so touches pass through to container */}
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1, pointerEvents: 'none' }} />
 
           {/* Crop frame */}
           <div
