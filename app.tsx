@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider, useToast } from './components/Toast';
 import { saveConversion, getUserStats } from './lib/database';
 import { uploadThumbnail } from './lib/storage';
+import { saveEdit, cleanupExpiredEdits } from './lib/editHistory';
 import Auth from './components/Auth';
 import Dashboard from './components/Dashboard';
 import DropZone from './components/DropZone';
@@ -265,6 +266,8 @@ const WildSauraApp: React.FC = () => {
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const processingRef = useRef(false);
   const originalUrlsRef = useRef<Map<string, string>>(new Map());
+  const previewGenRef = useRef(0); // generation counter for stale-check
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // ── Responsive handler ──
   useEffect(() => {
@@ -317,8 +320,18 @@ const WildSauraApp: React.FC = () => {
     return c;
   }, []);
 
+  // ── Cleanup expired edits on login ──
+  useEffect(() => {
+    if (user) {
+      cleanupExpiredEdits(user.uid).then((n) => {
+        if (n > 0) console.log(`Cleaned up ${n} expired edits`);
+      }).catch(() => {});
+    }
+  }, [user]);
+
   // ── Generate preview for selected file ──
   const generatePreview = useCallback(async (file: FileItem) => {
+    const genId = ++previewGenRef.current; // track generation
     try {
       // Use stable object URL — never re-read the file on every adjustment change
       let stableUrl = originalUrlsRef.current.get(file.id);
@@ -373,11 +386,15 @@ const WildSauraApp: React.FC = () => {
           srcH = cropH;
         }
 
+        // Reduced resolution for faster preview (600px instead of 800px)
         const canvas = document.createElement('canvas');
-        canvas.width = Math.min(srcW, 800);
+        canvas.width = Math.min(srcW, 600);
         canvas.height = Math.round(srcH * (canvas.width / srcW));
         const ctx = canvas.getContext('2d')!;
         ctx.drawImage(srcCanvas, 0, 0, canvas.width, canvas.height);
+
+        // Bail if a newer generation was requested (slider moved again)
+        if (genId !== previewGenRef.current) return;
 
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const { data } = imageData;
@@ -402,6 +419,9 @@ const WildSauraApp: React.FC = () => {
         if (adjustments.grain !== 0) editing.applyFilmGrain(data, w, h, adjustments.grain);
         if (adjustments.fog !== 0) editing.applyFog(data, w, h, adjustments.fog);
 
+        // Bail if stale before HSL (heaviest section)
+        if (genId !== previewGenRef.current) return;
+
         // Apply HSL
         for (const [channel, adj] of Object.entries(hslState)) {
           if (adj.hue !== 0 || adj.saturation !== 0 || adj.luminance !== 0) {
@@ -414,6 +434,9 @@ const WildSauraApp: React.FC = () => {
           applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
         }
 
+        // Final stale check before committing to state
+        if (genId !== previewGenRef.current) return;
+
         ctx.putImageData(imageData, 0, 0);
         setPreviewProcessed(canvas.toDataURL('image/jpeg', 0.85));
       } else {
@@ -425,13 +448,20 @@ const WildSauraApp: React.FC = () => {
   }, [activeLut, intensity, adjustments, hslState, cropState, transformState, applyTransformToCanvas]);
 
   // ── Update preview when selection, LUT, or adjustments change ──
+  // Debounced: waits 80ms after the last change before generating preview.
+  // This prevents heavy pixel operations from blocking the UI during slider drags.
   useEffect(() => {
-    if (selectedFile) {
-      generatePreview(selectedFile);
-    } else {
+    if (!selectedFile) {
       setPreviewOriginal(null);
       setPreviewProcessed(null);
+      return;
     }
+
+    const timer = setTimeout(() => {
+      generatePreview(selectedFile);
+    }, 80);
+
+    return () => clearTimeout(timer);
   }, [selectedFile, activeLutId, intensity, adjustments, hslState, cropState, transformState, generatePreview]);
 
   // ── Handle files added ──
@@ -772,6 +802,113 @@ const WildSauraApp: React.FC = () => {
     setCropState(prev => ({ ...prev, isActive: false }));
     showToast('Crop applied', 'success');
   }, [showToast]);
+
+  // ── Save edit to cloud (24h) ──
+  const handleSaveEdit = useCallback(async () => {
+    if (!user || !selectedFile) {
+      showToast(user ? 'No file selected' : 'Sign in to save edits', 'error');
+      return;
+    }
+    setIsSavingEdit(true);
+    try {
+      // Load image
+      let img = imageCache.current.get(selectedFile.id);
+      if (!img) {
+        let stableUrl = originalUrlsRef.current.get(selectedFile.id);
+        if (!stableUrl) {
+          stableUrl = URL.createObjectURL(selectedFile.file);
+          originalUrlsRef.current.set(selectedFile.id, stableUrl);
+        }
+        img = await loadImage(stableUrl);
+        imageCache.current.set(selectedFile.id, img);
+      }
+
+      // Apply transform
+      const hasTransform = transformState.rotation !== 0 || transformState.flipH || transformState.flipV;
+      const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
+      let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
+      let w = img.naturalWidth;
+      let h = img.naturalHeight;
+
+      if (hasTransform) {
+        const transformed = applyTransformToCanvas(img, transformState);
+        srcCanvas = transformed;
+        w = transformed.width;
+        h = transformed.height;
+      }
+      if (hasCrop) {
+        const cropX = Math.round(cropState.rect.x * w);
+        const cropY = Math.round(cropState.rect.y * h);
+        const cropW = Math.round(cropState.rect.width * w);
+        const cropH = Math.round(cropState.rect.height * h);
+        const tc = document.createElement('canvas');
+        tc.width = cropW; tc.height = cropH;
+        tc.getContext('2d')!.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        srcCanvas = tc;
+        w = cropW; h = cropH;
+      }
+
+      // Resize to max 2048 for cloud save (balance quality + speed)
+      if (w > 2048) { const s = 2048 / w; h = Math.round(h * s); w = 2048; }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(srcCanvas, 0, 0, w, h);
+
+      // Apply all adjustments
+      const hasAdj = Object.entries(adjustments).some(([_, v]) => v !== 0);
+      const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
+      const hasLut = activeLut && activeLut.data;
+
+      if (hasAdj || hasHSL || hasLut) {
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const { data } = imageData;
+        if (adjustments.exposure !== 0) editing.adjustExposure(data, w, h, adjustments.exposure);
+        if (adjustments.contrast !== 0) editing.adjustContrast(data, w, h, adjustments.contrast);
+        if (adjustments.highlights !== 0) editing.adjustHighlights(data, w, h, adjustments.highlights);
+        if (adjustments.shadows !== 0) editing.adjustShadows(data, w, h, adjustments.shadows);
+        if (adjustments.whites !== 0) editing.adjustWhites(data, w, h, adjustments.whites);
+        if (adjustments.blacks !== 0) editing.adjustBlacks(data, w, h, adjustments.blacks);
+        if (adjustments.temperature !== 0) editing.adjustTemperature(data, w, h, adjustments.temperature);
+        if (adjustments.tint !== 0) editing.adjustTint(data, w, h, adjustments.tint);
+        if (adjustments.vibrance !== 0) editing.adjustVibrance(data, w, h, adjustments.vibrance);
+        if (adjustments.saturation !== 0) editing.adjustSaturation(data, w, h, adjustments.saturation);
+        if (adjustments.clarity !== 0) editing.adjustClarity(data, w, h, adjustments.clarity);
+        if (adjustments.sharpness !== 0) editing.adjustSharpness(data, w, h, adjustments.sharpness);
+        if (adjustments.denoise !== 0) editing.adjustDenoise(data, w, h, adjustments.denoise);
+        if (adjustments.vignette !== 0) editing.applyVignette(data, w, h, adjustments.vignette);
+        if (adjustments.grain !== 0) editing.applyFilmGrain(data, w, h, adjustments.grain);
+        if (adjustments.fog !== 0) editing.applyFog(data, w, h, adjustments.fog);
+        for (const [channel, adj] of Object.entries(hslState)) {
+          if (adj.hue !== 0 || adj.saturation !== 0 || adj.luminance !== 0) {
+            editing.adjustHSL(data, w, h, channel, adj.hue, adj.saturation, adj.luminance);
+          }
+        }
+        if (hasLut && activeLut?.data) {
+          applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
+        }
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      // Create blob and upload
+      const blob: Blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('Blob creation failed'))),
+          'image/webp', 0.88
+        );
+      });
+
+      const outName = selectedFile.name.replace(/\.[^.]+$/, '') + '_edited.webp';
+      await saveEdit(user.uid, blob, outName, w, h, activeLut?.name || 'None');
+      showToast('Saved to cloud! Available for 24 hours ☁️', 'success');
+    } catch (err: any) {
+      console.error('Save edit error:', err);
+      showToast(`Save failed: ${err.message || 'Unknown error'}`, 'error');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  }, [user, selectedFile, adjustments, hslState, activeLut, intensity, cropState, transformState, applyTransformToCanvas, showToast]);
 
   // ── Reset adjustments (NEW) ──
   const resetAdjustments = useCallback(() => {
@@ -1148,6 +1285,9 @@ const WildSauraApp: React.FC = () => {
                     onApplyCrop={handleApplyCrop}
                     transformState={transformState}
                     onTransformStateChange={setTransformState}
+                    onSaveEdit={handleSaveEdit}
+                    isSavingEdit={isSavingEdit}
+                    isLoggedIn={!!user}
                   />
                 </aside>
               )}
@@ -1241,6 +1381,9 @@ const WildSauraApp: React.FC = () => {
                     onApplyCrop={handleApplyCrop}
                     transformState={transformState}
                     onTransformStateChange={setTransformState}
+                    onSaveEdit={handleSaveEdit}
+                    isSavingEdit={isSavingEdit}
+                    isLoggedIn={!!user}
                   />
                 </div>
               )}
