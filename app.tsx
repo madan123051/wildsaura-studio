@@ -264,6 +264,7 @@ const WildSauraApp: React.FC = () => {
   // ── Refs ──
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const processingRef = useRef(false);
+  const originalUrlsRef = useRef<Map<string, string>>(new Map());
 
   // ── Responsive handler ──
   useEffect(() => {
@@ -319,8 +320,13 @@ const WildSauraApp: React.FC = () => {
   // ── Generate preview for selected file ──
   const generatePreview = useCallback(async (file: FileItem) => {
     try {
-      const dataUrl = await fileToDataUrl(file.file);
-      setPreviewOriginal(dataUrl);
+      // Use stable object URL — never re-read the file on every adjustment change
+      let stableUrl = originalUrlsRef.current.get(file.id);
+      if (!stableUrl) {
+        stableUrl = URL.createObjectURL(file.file);
+        originalUrlsRef.current.set(file.id, stableUrl);
+      }
+      setPreviewOriginal(stableUrl); // React skips re-render if same string
 
       // Check if any edits or LUT are active
       const hasAdjustments = Object.entries(adjustments).some(([_, v]) => v !== 0);
@@ -335,7 +341,7 @@ const WildSauraApp: React.FC = () => {
       } else if (hasAdjustments || hasHSL || hasLut || hasCrop || hasTransform) {
         let img = imageCache.current.get(file.id);
         if (!img) {
-          img = await loadImage(dataUrl);
+          img = await loadImage(stableUrl);
           imageCache.current.set(file.id, img);
         }
 
@@ -710,6 +716,9 @@ const WildSauraApp: React.FC = () => {
       });
     }
     imageCache.current.delete(id);
+    // Clean up stable object URL
+    const url = originalUrlsRef.current.get(id);
+    if (url) { URL.revokeObjectURL(url); originalUrlsRef.current.delete(id); }
   }, [files, selectedId]);
 
   // ── Reset all statuses ──
@@ -725,6 +734,9 @@ const WildSauraApp: React.FC = () => {
     setFiles([]);
     setSelectedId(null);
     imageCache.current.clear();
+    // Clean up all stable object URLs
+    originalUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    originalUrlsRef.current.clear();
     setPreviewOriginal(null);
     setPreviewProcessed(null);
     showToast('Cleared all files', 'info');
