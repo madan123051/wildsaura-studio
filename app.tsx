@@ -35,6 +35,8 @@ interface ConversionSettingsData {
   smartName: boolean;
   keepExif: boolean;
   autoConvert: boolean;
+  exportFormat: 'webp' | 'jpeg' | 'png';
+  exportProfile: 'original' | 'high' | 'web';
 }
 
 // ─── Helpers ──────────────────────────────────────────────
@@ -256,6 +258,8 @@ const WildSauraApp: React.FC = () => {
     smartName: true,
     keepExif: true,
     autoConvert: false,
+    exportFormat: 'webp',
+    exportProfile: 'high',
   });
 
   // ── Processing State ──
@@ -391,11 +395,15 @@ const WildSauraApp: React.FC = () => {
           srcH = cropH;
         }
 
-        // Reduced resolution for faster preview (600px instead of 800px)
+        // High-quality adaptive proxy preview: keep source untouched for export pipeline.
+        const previewMaxEdge = isMobile ? 1400 : 2200;
         const canvas = document.createElement('canvas');
-        canvas.width = Math.min(srcW, 600);
-        canvas.height = Math.round(srcH * (canvas.width / srcW));
+        const scale = Math.min(1, previewMaxEdge / Math.max(srcW, srcH));
+        canvas.width = Math.max(1, Math.round(srcW * scale));
+        canvas.height = Math.max(1, Math.round(srcH * scale));
         const ctx = canvas.getContext('2d')!;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(srcCanvas, 0, 0, canvas.width, canvas.height);
 
         // Bail if a newer generation was requested (slider moved again)
@@ -443,7 +451,7 @@ const WildSauraApp: React.FC = () => {
         if (genId !== previewGenRef.current) return;
 
         ctx.putImageData(imageData, 0, 0);
-        setPreviewProcessed(canvas.toDataURL('image/jpeg', 0.85));
+        setPreviewProcessed(canvas.toDataURL('image/jpeg', 0.94));
       } else {
         setPreviewProcessed(null);
       }

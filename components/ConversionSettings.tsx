@@ -7,6 +7,8 @@ export interface ConversionSettingsData {
   smartName: boolean;
   keepExif: boolean;
   autoConvert: boolean;
+  exportFormat: 'webp' | 'jpeg' | 'png';
+  exportProfile: 'original' | 'high' | 'web';
 }
 
 interface FileStats {
