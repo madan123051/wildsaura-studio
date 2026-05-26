@@ -153,6 +153,13 @@ export const BUILT_IN_PRESETS: PresetDefinition[] = [
 
   // ======================== Cinematic ========================
   {
+    id: 'wildsaura_look',
+    name: 'WILDSAURA LOOK',
+    category: 'Cinematic',
+    description: 'Cinematic Nature',
+    adjustments: { exposure: 4, contrast: 18, highlights: -14, shadows: 10, whites: -6, blacks: 8, temperature: 10, tint: -4, vibrance: 12, saturation: -6, clarity: 12, sharpness: 8, vignette: 14, grain: 6, fog: 5 },
+  },
+  {
     id: 'teal_orange',
     name: 'Teal & Orange',
     category: 'Cinematic',
