@@ -8,6 +8,8 @@ export interface FileItem {
   originalSize: number;
   convertedSize?: number;
   convertedBlob?: Blob;
+  convertedName?: string;
+  convertedFormat?: 'webp' | 'jpeg' | 'png';
   width?: number;
   height?: number;
   thumbnailUrl?: string;

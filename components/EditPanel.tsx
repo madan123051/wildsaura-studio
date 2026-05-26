@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import type { EditAdjustments, HSLState, HSLAdjustment, CropState, CropAspect, TransformState } from '../types';
-import { DEFAULT_CROP_STATE, DEFAULT_CROP_RECT, DEFAULT_TRANSFORM_STATE } from '../types';
-import type { LUTPreset } from './LUTPanel';
+import { DEFAULT_CROP_STATE } from '../types';
+import { parseCubeFile, type LUTPreset } from './LUTPanel';
 
 interface ConversionSettingsData {
   quality: number;
@@ -398,6 +398,18 @@ const HSL_CHANNELS: { key: string; label: string; color: string }[] = [
   { key: 'magenta', label: 'Magenta', color: '#ec4899' },
 ];
 
+const EXPORT_FORMATS: { label: string; value: ConversionSettingsData['exportFormat'] }[] = [
+  { label: 'WebP', value: 'webp' },
+  { label: 'JPEG', value: 'jpeg' },
+  { label: 'PNG', value: 'png' },
+];
+
+const EXPORT_PROFILES: { label: string; value: ConversionSettingsData['exportProfile'] }[] = [
+  { label: 'Original', value: 'original' },
+  { label: 'High', value: 'high' },
+  { label: 'Web', value: 'web' },
+];
+
 // ─── Main Component ─────────────────────────────────────────────────────────
 
 const EditPanel: React.FC<EditPanelProps> = ({
@@ -560,7 +572,15 @@ const EditPanel: React.FC<EditPanelProps> = ({
 
   const lutNonZero = activeLutId !== null;
 
-  const exportNonZero = false;
+  const exportNonZero =
+    settings.quality !== 82 ||
+    settings.resize4k ||
+    settings.lossless ||
+    !settings.smartName ||
+    !settings.keepExif ||
+    settings.autoConvert ||
+    settings.exportFormat !== 'webp' ||
+    settings.exportProfile !== 'high';
 
   const currentHsl: HSLAdjustment = (hslState as unknown as Record<string, HSLAdjustment>)[selectedHslChannel] || {
     hue: 0,
@@ -576,13 +596,15 @@ const EditPanel: React.FC<EditPanelProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       const text = reader.result as string;
+      const parsed = parseCubeFile(text);
+      if (!parsed) return;
       onAddCustomLut({
         id: `custom-${Date.now()}`,
-        name: file.name.replace('.cube', ''),
-        data: null,
-        size: 0,
+        name: parsed.name || file.name.replace(/\.cube$/i, ''),
+        data: parsed.data,
+        size: parsed.size,
         isCustom: true,
-      } as LUTPreset);
+      });
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -1109,6 +1131,67 @@ const EditPanel: React.FC<EditPanelProps> = ({
 
       {/* ── Section 7: Export ────────────────────────────────── */}
       <Section title="Export" icon="📤" hasNonZero={exportNonZero}>
+        <div style={{ padding: '2px 0 7px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>Format</span>
+            <div style={{ display: 'flex', gap: 3 }}>
+              {EXPORT_FORMATS.map((option) => {
+                const active = settings.exportFormat === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    onClick={() =>
+                      updateSettings({
+                        exportFormat: option.value,
+                        lossless: option.value === 'webp' ? settings.lossless : false,
+                      })
+                    }
+                    style={{
+                      padding: '4px 7px',
+                      borderRadius: 5,
+                      border: active ? '1px solid rgba(99,102,241,0.45)' : '1px solid rgba(255,255,255,0.06)',
+                      background: active ? 'rgba(99,102,241,0.22)' : 'rgba(255,255,255,0.04)',
+                      color: active ? '#c4b5fd' : 'rgba(255,255,255,0.48)',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>Profile</span>
+            <div style={{ display: 'flex', gap: 3 }}>
+              {EXPORT_PROFILES.map((option) => {
+                const active = settings.exportProfile === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    onClick={() => updateSettings({ exportProfile: option.value })}
+                    style={{
+                      padding: '4px 7px',
+                      borderRadius: 5,
+                      border: active ? '1px solid rgba(99,102,241,0.45)' : '1px solid rgba(255,255,255,0.06)',
+                      background: active ? 'rgba(99,102,241,0.22)' : 'rgba(255,255,255,0.04)',
+                      color: active ? '#c4b5fd' : 'rgba(255,255,255,0.48)',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
         <Slider
           label="Quality"
           value={settings.quality}
@@ -1118,7 +1201,9 @@ const EditPanel: React.FC<EditPanelProps> = ({
           centered={false}
         />
         <Toggle label="Resize to 4K max" checked={settings.resize4k} onChange={(v) => updateSettings({ resize4k: v })} />
-        <Toggle label="Lossless WebP" checked={settings.lossless} onChange={(v) => updateSettings({ lossless: v })} />
+        {settings.exportFormat === 'webp' && (
+          <Toggle label="Lossless WebP" checked={settings.lossless} onChange={(v) => updateSettings({ lossless: v })} />
+        )}
         <Toggle label="Smart naming" checked={settings.smartName} onChange={(v) => updateSettings({ smartName: v })} />
         <Toggle label="Keep EXIF" checked={settings.keepExif} onChange={(v) => updateSettings({ keepExif: v })} />
         <Toggle label="Auto-convert on drop" checked={settings.autoConvert} onChange={(v) => updateSettings({ autoConvert: v })} />
