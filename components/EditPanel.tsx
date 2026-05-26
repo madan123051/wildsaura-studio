@@ -40,6 +40,9 @@ interface EditPanelProps {
   onSaveEdit?: () => void;
   isSavingEdit?: boolean;
   isLoggedIn?: boolean;
+  onAICinematic?: () => void;
+  isAICinematicLoading?: boolean;
+  aiCinematicCategory?: string | null;
 }
 
 // ─── Internal Slider ────────────────────────────────────────────────────────
@@ -423,6 +426,9 @@ const EditPanel: React.FC<EditPanelProps> = ({
   onSaveEdit,
   isSavingEdit,
   isLoggedIn,
+  onAICinematic,
+  isAICinematicLoading,
+  aiCinematicCategory,
 }) => {
   const [selectedHslChannel, setSelectedHslChannel] = useState<string>('red');
 
@@ -599,6 +605,83 @@ const EditPanel: React.FC<EditPanelProps> = ({
         scrollbarColor: 'rgba(255,255,255,0.08) transparent',
       }}
     >
+      {/* ── Section: AI Cinematic ────────────────────────────── */}
+      <Section
+        title="AI Cinematic"
+        icon="🤖"
+        hasNonZero={!!aiCinematicCategory}
+        defaultOpen={true}
+      >
+        <div style={{ padding: '4px 0 8px' }}>
+          <p style={{
+            fontSize: 11,
+            color: 'rgba(255,255,255,0.5)',
+            margin: '0 0 10px 0',
+            lineHeight: 1.5,
+          }}>
+            Gemini AI analyzes your photo and applies the perfect cinematic color grade.
+          </p>
+
+          {aiCinematicCategory && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 10px',
+              borderRadius: 8,
+              marginBottom: 8,
+              background: 'rgba(99,102,241,0.1)',
+              border: '1px solid rgba(99,102,241,0.2)',
+            }}>
+              <span style={{ fontSize: 14 }}>
+                {aiCinematicCategory === 'STREET_NIGHT' && '🌆'}
+                {aiCinematicCategory === 'NATURE_WILDLIFE' && '🌿'}
+                {aiCinematicCategory === 'PORTRAIT_PEOPLE' && '👤'}
+                {aiCinematicCategory === 'LANDSCAPE_DAY' && '🏔️'}
+                {aiCinematicCategory === 'MINIMAL_MOODY' && '🌫️'}
+                {!['STREET_NIGHT', 'NATURE_WILDLIFE', 'PORTRAIT_PEOPLE', 'LANDSCAPE_DAY', 'MINIMAL_MOODY'].includes(aiCinematicCategory) && '🎬'}
+              </span>
+              <div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>Detected:</div>
+                <div style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: '#a78bfa',
+                }}>
+                  {aiCinematicCategory.replace(/_/g, ' ')}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={onAICinematic}
+            disabled={isAICinematicLoading}
+            style={{
+              width: '100%',
+              padding: '9px 0',
+              borderRadius: 7,
+              border: 'none',
+              fontWeight: 700,
+              fontSize: 12,
+              cursor: isAICinematicLoading ? 'not-allowed' : 'pointer',
+              background: isAICinematicLoading
+                ? 'rgba(99,102,241,0.2)'
+                : 'linear-gradient(135deg, #6366f1, #8b5cf6, #ec4899)',
+              color: isAICinematicLoading ? 'rgba(255,255,255,0.4)' : '#fff',
+              transition: 'all 0.2s',
+              boxShadow: isAICinematicLoading ? 'none' : '0 4px 15px rgba(99,102,241,0.3)',
+            }}
+          >
+            {isAICinematicLoading ? (
+              <span>⏳ Analyzing image…</span>
+            ) : (
+              <span>✨ Auto-Detect & Apply</span>
+            )}
+          </button>
+        </div>
+      </Section>
+
       {/* ── Section 0: Crop ──────────────────────────────────── */}
       <Section
         title="Crop"
