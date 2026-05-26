@@ -620,17 +620,30 @@ const WildSauraApp: React.FC = () => {
     showToast(`Batch complete! ${pending.length} files processed`, 'success');
   }, [files, processFile, showToast]);
 
+  const triggerDownload = useCallback((blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // Safari/Firefox can fail if URL is revoked synchronously after click.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, []);
+
   // ── Download single file ──
   const downloadSingle = useCallback((file: FileItem) => {
-    if (!file.convertedBlob) return;
-    const url = URL.createObjectURL(file.convertedBlob);
-    const a = document.createElement('a');
+    if (!file.convertedBlob) {
+      showToast('File is not ready to download yet', 'error');
+      return;
+    }
+
     const outName = file.convertedName || createOutputFileName(file.name, settings.smartName, activeLut?.name, 'webp');
-    a.href = url;
-    a.download = outName;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [settings.smartName, activeLut]);
+    triggerDownload(file.convertedBlob, outName);
+  }, [settings.smartName, activeLut, showToast, triggerDownload]);
 
   // ── Download all as zip ──
   const downloadAllZip = useCallback(async () => {
@@ -646,14 +659,9 @@ const WildSauraApp: React.FC = () => {
     }
 
     const blob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `wildsaura_export_${Date.now()}.zip`;
-    a.click();
-    URL.revokeObjectURL(url);
+    triggerDownload(blob, `wildsaura_export_${Date.now()}.zip`);
     showToast(`Downloaded ${doneFiles.length} files as zip`, 'success');
-  }, [files, settings.smartName, activeLut, showToast]);
+  }, [files, settings.smartName, activeLut, showToast, triggerDownload]);
 
   // ── Remove file ──
   const removeFile = useCallback((id: string) => {
@@ -770,7 +778,12 @@ const WildSauraApp: React.FC = () => {
       showToast('Saved to cloud! Available for 24 hours', 'success');
     } catch (err: any) {
       console.error('Save edit error:', err);
-      showToast(`Save failed: ${err.message || 'Unknown error'}`, 'error');
+      const message = typeof err?.message === 'string' ? err.message : 'Unknown error';
+      if (message.includes('storage/unauthorized') || message.includes('permission-denied')) {
+        showToast('Cloud save failed: storage permission denied. Check Firebase Storage rules for authenticated users.', 'error');
+      } else {
+        showToast(`Save failed: ${message}`, 'error');
+      }
     } finally {
       setIsSavingEdit(false);
     }
