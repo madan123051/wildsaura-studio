@@ -128,9 +128,21 @@ const DropZone: React.FC<DropZoneProps> = ({ onFilesAdded, compact = false }) =>
             onPointerDown={onSliderPointerDown}
             onPointerMove={onSliderPointerMove}
           >
+            <img
+              className="stage-source-image"
+              src="https://images.pexels.com/photos/247502/pexels-photo-247502.jpeg?auto=compress&cs=tinysrgb&w=1920&dpr=2"
+              alt="Cinematic tiger in natural forest light"
+              loading="lazy"
+              decoding="async"
+            />
             <div className="stage-before" />
             <div className="stage-after" style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }} />
             <div className="stage-labels"><span>BEFORE</span><span>AFTER</span></div>
+            <div className="stage-overlay-copy">
+              <h3>WILDSAURA LOOK</h3>
+              <p>Cinematic Nature Color Science</p>
+              <p>Transform wildlife into cinematic storytelling.</p>
+            </div>
             <div className="stage-divider" style={{ left: `${sliderPosition}%` }}>
               <div className="stage-knob" />
             </div>
