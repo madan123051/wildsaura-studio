@@ -614,3 +614,68 @@ input[type="range"]::-moz-range-thumb {
     padding: 8px;
   }
 }
+
+/* ── V2 UI Polish: smooth + mobile friendly ── */
+:root {
+  --tap-highlight: rgba(99,102,241,0.16);
+}
+
+html, body {
+  touch-action: manipulation;
+}
+
+button,
+[role='button'],
+input[type='range'],
+input[type='checkbox'] {
+  -webkit-tap-highlight-color: var(--tap-highlight);
+}
+
+button {
+  min-height: 38px;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(99,102,241,0.8);
+  outline-offset: 2px;
+}
+
+.btn-primary,
+.btn-success {
+  min-height: 40px;
+  padding: 10px 14px;
+}
+
+@media (max-width: 768px) {
+  body,
+  #root {
+    height: 100dvh;
+  }
+
+  .file-sidebar.mobile-open,
+  .mobile-overlay {
+    top: 56px;
+  }
+
+  .glass-panel {
+    border-radius: 10px;
+  }
+
+  .btn-primary,
+  .btn-success {
+    width: 100%;
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
