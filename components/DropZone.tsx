@@ -19,8 +19,9 @@ type ShowcasePreset = {
 
 const ACCEPTED_TYPES = [
   'image/jpeg', 'image/png', 'image/tiff', 'image/webp', 'image/bmp',
+  'image/x-canon-cr2', 'image/x-canon-cr3', 'image/x-nikon-nef', 'image/x-sony-arw', 'image/x-adobe-dng', 'image/x-fuji-raf',
 ];
-const ACCEPTED_EXT = '.jpg,.jpeg,.png,.tiff,.tif,.webp,.bmp';
+const ACCEPTED_EXT = '.jpg,.jpeg,.png,.tiff,.tif,.webp,.bmp,.cr2,.cr3,.nef,.arw,.dng,.raf';
 
 const SHOWCASE_PRESETS: ShowcasePreset[] = [
   {
@@ -96,7 +97,7 @@ const DropZone: React.FC<DropZoneProps> = ({ onFilesAdded, compact = false }) =>
   const handleFiles = useCallback((fileList: FileList | null) => {
     if (!fileList) return;
     const valid = Array.from(fileList).filter(
-      (f) => ACCEPTED_TYPES.includes(f.type) || /\.(jpe?g|png|tiff?|webp|bmp)$/i.test(f.name)
+      (f) => ACCEPTED_TYPES.includes(f.type) || /\.(jpe?g|png|tiff?|webp|bmp|cr2|cr3|nef|arw|dng|raf)$/i.test(f.name)
     );
     if (valid.length > 0) onFilesAdded(valid);
   }, [onFilesAdded]);
