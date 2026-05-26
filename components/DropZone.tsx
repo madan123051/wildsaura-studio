@@ -12,7 +12,9 @@ const ACCEPTED_EXT = '.jpg,.jpeg,.png,.tiff,.tif,.webp,.bmp';
 
 const DropZone: React.FC<DropZoneProps> = ({ onFilesAdded, compact = false }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const [sliderPosition, setSliderPosition] = useState(58);
   const inputRef = useRef<HTMLInputElement>(null);
+  const sliderRef = useRef<HTMLDivElement>(null);
   const dragCounter = useRef(0);
 
   const handleFiles = useCallback((fileList: FileList | null) => {
@@ -53,6 +55,23 @@ const DropZone: React.FC<DropZoneProps> = ({ onFilesAdded, compact = false }) =>
     if (inputRef.current) inputRef.current.value = '';
   }, [handleFiles]);
 
+  const moveSlider = useCallback((clientX: number) => {
+    if (!sliderRef.current) return;
+    const rect = sliderRef.current.getBoundingClientRect();
+    const next = ((clientX - rect.left) / rect.width) * 100;
+    setSliderPosition(Math.max(8, Math.min(92, next)));
+  }, []);
+
+  const onSliderPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    moveSlider(e.clientX);
+  }, [moveSlider]);
+
+  const onSliderPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.buttons === 0) return;
+    moveSlider(e.clientX);
+  }, [moveSlider]);
+
   /* ── Compact mode: small "+ Add" button ── */
   if (compact) {
     return (
@@ -89,50 +108,58 @@ const DropZone: React.FC<DropZoneProps> = ({ onFilesAdded, compact = false }) =>
   /* ── Full mode: large drop area ── */
   return (
     <div
+      className="cinematic-upload-shell"
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      onClick={onClick}
-      style={{
-        width: '100%', maxWidth: 520,
-        padding: '48px 32px',
-        borderRadius: 16,
-        border: `2px dashed ${isDragging ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`,
-        background: isDragging ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)',
-        cursor: 'pointer',
-        textAlign: 'center',
-        transition: 'all 0.25s',
-        backdropFilter: 'blur(12px)',
-      }}
     >
       <input ref={inputRef} type="file" accept={ACCEPTED_EXT} multiple onChange={onInputChange}
         style={{ display: 'none' }} />
-
-      {/* Upload Icon */}
-      <div style={{
-        width: 64, height: 64, borderRadius: 16, margin: '0 auto 20px',
-        background: isDragging ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        transition: 'all 0.25s',
-      }}>
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
-          stroke={isDragging ? '#a78bfa' : 'rgba(255,255,255,0.3)'}
-          strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="17 8 12 3 7 8" />
-          <line x1="12" y1="3" x2="12" y2="15" />
-        </svg>
-      </div>
-
-      <div style={{ fontSize: 15, fontWeight: 600, color: isDragging ? '#a78bfa' : 'var(--text-primary)', marginBottom: 6 }}>
-        {isDragging ? 'Drop files here' : 'Drop images or click to browse'}
-      </div>
-      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-        JPEG · PNG · TIFF · WebP · BMP
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, opacity: 0.6 }}>
-        Batch processing supported — add multiple files
+      <div className="cinematic-hero">
+        <div className="cinematic-background" />
+        <div className="cinematic-particles" />
+        <div className="cinematic-content">
+          <p className="cinematic-kicker">WILDSAURA LOOK — Cinematic Nature Color Science</p>
+          <h2>Wildlife Stories, Reimagined in Motion Picture Color</h2>
+          <div
+            className="before-after-stage"
+            ref={sliderRef}
+            onPointerDown={onSliderPointerDown}
+            onPointerMove={onSliderPointerMove}
+          >
+            <div className="stage-before" />
+            <div className="stage-after" style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }} />
+            <div className="stage-labels"><span>BEFORE</span><span>AFTER</span></div>
+            <div className="stage-divider" style={{ left: `${sliderPosition}%` }}>
+              <div className="stage-knob" />
+            </div>
+          </div>
+          <button
+            onClick={onClick}
+            className={`cinematic-upload-cta ${isDragging ? 'dragging' : ''}`}
+          >
+            <span className="upload-icon">⬆</span>
+            <span>
+              <strong>{isDragging ? 'Drop your wildlife story here' : 'Upload Your Image'}</strong>
+              <small>JPEG • PNG • RAW • TIFF • WebP</small>
+            </span>
+          </button>
+          <div className="preset-card-row">
+            {[
+              ['WILDSAURA LOOK', 'Cinematic Nature'],
+              ['Deep Forest', 'Moody Jungle'],
+              ['Savanna Gold', 'Golden Wildlife'],
+              ['Arctic Silence', 'Frozen Atmosphere'],
+              ['Rain Earth', 'Monsoon Mood'],
+            ].map(([name, mood]) => (
+              <div key={name} className="preset-mini-card">
+                <b>{name}</b>
+                <span>{mood}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
