@@ -26,7 +26,7 @@ interface CatalogViewProps {
 type ViewMode = 'grid' | 'list';
 type SortKey = 'name' | 'size' | 'status';
 
-const ACCEPT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/tiff', 'image/bmp'];
+const ACCEPT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/tiff', 'image/bmp', 'image/x-canon-cr2', 'image/x-canon-cr3', 'image/x-nikon-nef', 'image/x-sony-arw', 'image/x-adobe-dng', 'image/x-fuji-raf'];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -141,7 +141,7 @@ const CatalogView: React.FC<CatalogViewProps> = ({
       setIsDraggingOver(false);
 
       const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
-        ACCEPT_TYPES.includes(f.type)
+        ACCEPT_TYPES.includes(f.type) || /\.(jpe?g|png|tiff?|webp|bmp|cr2|cr3|nef|arw|dng|raf)$/i.test(f.name)
       );
       if (droppedFiles.length > 0) {
         onFilesAdded(droppedFiles);
@@ -153,7 +153,7 @@ const CatalogView: React.FC<CatalogViewProps> = ({
   const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const selected = Array.from(e.target.files || []).filter((f) =>
-        ACCEPT_TYPES.includes(f.type)
+        ACCEPT_TYPES.includes(f.type) || /\.(jpe?g|png|tiff?|webp|bmp|cr2|cr3|nef|arw|dng|raf)$/i.test(f.name)
       );
       if (selected.length > 0) {
         onFilesAdded(selected);

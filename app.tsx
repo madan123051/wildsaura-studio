@@ -20,6 +20,7 @@ import type { EditAdjustments, HSLState, CropState, CropRect, TransformState } f
 import { BUILT_IN_PRESETS } from './utils/presetData';
 import { BUILT_IN_LUTS } from './utils/lutData';
 import { getCinematicPreset } from './utils/cinematicPresets';
+import { isSupportedImageFile, normalizePresetId, sanitizeFileName } from './utils/inputSafety';
 import {
   createOutputFileName,
   encodeCanvas,
@@ -474,8 +475,11 @@ const WildSauraApp: React.FC = () => {
 
   // ── Handle files added ──
   const handleFilesAdded = useCallback(async (newFiles: File[]) => {
+    const validFiles = newFiles.filter((file) => isSupportedImageFile(file).ok);
+    const rejectedCount = newFiles.length - validFiles.length;
+    if (rejectedCount > 0) showToast(`${rejectedCount} file(s) skipped: unsupported format. Supported RAW: CR2, CR3, NEF, ARW, DNG, RAF.`, 'error');
     const items: FileItem[] = await Promise.all(
-      newFiles.map(async (file) => {
+      validFiles.map(async (file) => {
         const id = generateId();
         const thumbnailUrl = await createThumbnailUrl(file);
         // Get dimensions
@@ -490,7 +494,7 @@ const WildSauraApp: React.FC = () => {
         return {
           id,
           file,
-          name: file.name,
+          name: sanitizeFileName(file.name),
           status: 'pending' as const,
           originalSize: file.size,
           width,
@@ -821,12 +825,16 @@ const WildSauraApp: React.FC = () => {
       const dataUrl = await fileToDataUrl(selectedFile.file);
       const base64 = dataUrl.split(',')[1];
       const mimeType = selectedFile.file.type || 'image/jpeg';
+      const safeFileName = sanitizeFileName(selectedFile.file.name);
+      const payload = { imageData: typeof base64 === 'string' ? base64 : '', mimeType };
+      if (!payload.imageData.trim()) throw new Error('Invalid image data for AI analysis');
+      console.info('[AI_CINEMATIC_REQUEST]', { fileName: safeFileName, mimeType, renderMode: settings.exportProfile, stage: 'before-request' });
       
       // Call the Vercel serverless function
       const response = await fetch('/api/classify-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageData: base64, mimeType }),
+        body: JSON.stringify(payload),
       });
       
       if (!response.ok) {
@@ -834,22 +842,32 @@ const WildSauraApp: React.FC = () => {
         throw new Error(err.error || 'Classification failed');
       }
       
-      const { category } = await response.json();
+      const aiResult = await response.json();
+      const category = typeof aiResult?.category === 'string' ? aiResult.category : 'NATURE_WILDLIFE';
       setAiCinematicCategory(category);
-      
+
       // Apply the cinematic preset
       const preset = getCinematicPreset(category);
       setAdjustments({ ...DEFAULT_ADJUSTMENTS, ...preset.adjustments });
       setHslState({ ...DEFAULT_HSL_STATE, ...preset.hslOverrides });
       
+      const normalizedPresetId = normalizePresetId(category);
+      console.info('[AI_CINEMATIC_SUCCESS]', { presetId: normalizedPresetId, fileName: safeFileName, mimeType, stage: 'after-response' });
       showToast(`✨ AI Cinematic: ${category.replace(/_/g, ' ')}`, 'success');
     } catch (err: any) {
-      console.error('AI Cinematic error:', err);
-      showToast(`AI Cinematic failed: ${err.message}`, 'error');
+      console.error('[AI_CINEMATIC_ERROR]', {
+        error: err?.message || 'unknown',
+        fileName: selectedFile?.file?.name,
+        mimeType: selectedFile?.file?.type || 'image/jpeg',
+        stage: 'handleAICinematic',
+      });
+      setAdjustments({ ...DEFAULT_ADJUSTMENTS });
+      setHslState({ ...DEFAULT_HSL_STATE });
+      showToast('Unable to process this image preset. Trying recovery mode with a safe cinematic profile.', 'error');
     } finally {
       setIsAICinematicLoading(false);
     }
-  }, [selectedFile, showToast]);
+  }, [selectedFile, settings.exportProfile, showToast]);
 
   // ─── Auth screen ──────────────────────────────────────────
   if (!guestMode && !user && !authLoading) {
