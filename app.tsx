@@ -2,13 +2,12 @@ import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { createRoot } from 'react-dom/client';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider, useToast } from './components/Toast';
-import { saveConversion, getUserStats } from './lib/database';
-import { uploadThumbnail } from './lib/storage';
+import { saveConversion } from './lib/database';
 import { saveEdit, cleanupExpiredEdits } from './lib/editHistory';
 import Auth from './components/Auth';
 import Dashboard from './components/Dashboard';
 import DropZone from './components/DropZone';
-import FileList, { formatSize } from './components/FileList';
+import FileList from './components/FileList';
 import type { FileItem } from './components/FileList';
 import ImagePreview from './components/ImagePreview';
 import LUTPanel from './components/LUTPanel';
@@ -18,11 +17,15 @@ import PresetsPanel from './components/PresetsPanel';
 import CatalogView from './components/CatalogView';
 import { DEFAULT_ADJUSTMENTS, DEFAULT_HSL_STATE, DEFAULT_CROP_STATE, DEFAULT_TRANSFORM_STATE } from './types';
 import type { EditAdjustments, HSLState, CropState, CropRect, TransformState } from './types';
-import * as editing from './utils/imageEditing';
 import { BUILT_IN_PRESETS } from './utils/presetData';
-import { applyLUT } from './utils/imageProcessor';
 import { BUILT_IN_LUTS } from './utils/lutData';
 import { getCinematicPreset } from './utils/cinematicPresets';
+import {
+  createOutputFileName,
+  encodeCanvas,
+  hasRenderableChanges,
+  renderEditedCanvas,
+} from './utils/editorPipeline';
 import './styles.css';
 
 declare const JSZip: any;
@@ -275,8 +278,34 @@ const WildSauraApp: React.FC = () => {
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
   const processingRef = useRef(false);
   const originalUrlsRef = useRef<Map<string, string>>(new Map());
+  const processedPreviewUrlRef = useRef<string | null>(null);
+  const filesRef = useRef<FileItem[]>([]);
+  const processFileRef = useRef<(fileId: string) => Promise<void>>(async () => {});
   const previewGenRef = useRef(0); // generation counter for stale-check
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
+  const setProcessedPreview = useCallback((url: string | null, isObjectUrl = false) => {
+    if (processedPreviewUrlRef.current) {
+      URL.revokeObjectURL(processedPreviewUrlRef.current);
+    }
+    processedPreviewUrlRef.current = isObjectUrl ? url : null;
+    setPreviewProcessed(url);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      originalUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      originalUrlsRef.current.clear();
+      if (processedPreviewUrlRef.current) {
+        URL.revokeObjectURL(processedPreviewUrlRef.current);
+        processedPreviewUrlRef.current = null;
+      }
+    };
+  }, []);
 
   // ── Responsive handler ──
   useEffect(() => {
@@ -297,6 +326,38 @@ const WildSauraApp: React.FC = () => {
     [presets, activeLutId]
   );
 
+  const conversionRecipe = useMemo(
+    () => JSON.stringify({
+      activeLutId,
+      intensity,
+      adjustments,
+      hslState,
+      cropRect: cropState.rect,
+      transformState,
+      quality: settings.quality,
+      resize4k: settings.resize4k,
+      lossless: settings.lossless,
+      smartName: settings.smartName,
+      exportFormat: settings.exportFormat,
+      exportProfile: settings.exportProfile,
+    }),
+    [
+      activeLutId,
+      intensity,
+      adjustments,
+      hslState,
+      cropState.rect,
+      transformState,
+      settings.quality,
+      settings.resize4k,
+      settings.lossless,
+      settings.smartName,
+      settings.exportFormat,
+      settings.exportProfile,
+    ],
+  );
+  const conversionRecipeRef = useRef(conversionRecipe);
+
   // ── File stats ──
   const fileStats = useMemo(() => {
     const total = files.length;
@@ -307,27 +368,29 @@ const WildSauraApp: React.FC = () => {
     return { total, done, pending, totalBefore, totalAfter };
   }, [files]);
 
-  // ── Transform helper (rotate + flip) ──
-  const applyTransformToCanvas = useCallback((
-    source: HTMLImageElement | HTMLCanvasElement,
-    t: TransformState
-  ): HTMLCanvasElement => {
-    const sW = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
-    const sH = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
-    const isRotated90 = t.rotation === 90 || t.rotation === 270;
-    const outW = isRotated90 ? sH : sW;
-    const outH = isRotated90 ? sW : sH;
-    const c = document.createElement('canvas');
-    c.width = outW;
-    c.height = outH;
-    const ctx = c.getContext('2d')!;
-    ctx.translate(outW / 2, outH / 2);
-    ctx.rotate((t.rotation * Math.PI) / 180);
-    if (t.flipH) ctx.scale(-1, 1);
-    if (t.flipV) ctx.scale(1, -1);
-    ctx.drawImage(source, -sW / 2, -sH / 2);
-    return c;
-  }, []);
+  useEffect(() => {
+    if (conversionRecipeRef.current === conversionRecipe) return;
+    conversionRecipeRef.current = conversionRecipe;
+
+    setFiles((prev) => {
+      let changed = false;
+      const next = prev.map((file) => {
+        if (file.status !== 'done' && !file.convertedBlob && !file.convertedSize) return file;
+        changed = true;
+        return {
+          ...file,
+          status: 'pending' as const,
+          convertedBlob: undefined,
+          convertedSize: undefined,
+          convertedName: undefined,
+          convertedFormat: undefined,
+          error: undefined,
+        };
+      });
+      if (changed) filesRef.current = next;
+      return changed ? next : prev;
+    });
+  }, [conversionRecipe]);
 
   // ── Cleanup expired edits on login ──
   useEffect(() => {
@@ -350,115 +413,47 @@ const WildSauraApp: React.FC = () => {
       }
       setPreviewOriginal(stableUrl); // React skips re-render if same string
 
-      // Check if any edits or LUT are active
-      const hasAdjustments = Object.entries(adjustments).some(([_, v]) => v !== 0);
-      const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
-      const hasLut = activeLut && activeLut.data;
-      const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
-      const hasTransform = transformState.rotation !== 0 || transformState.flipH || transformState.flipV;
+      const renderOptions = {
+        adjustments,
+        hslState,
+        cropState,
+        transformState,
+        activeLut,
+        intensity,
+        maxEdge: isMobile ? 1400 : 2200,
+      };
 
-      if (file.status === 'done' && file.convertedBlob) {
+      if (!hasRenderableChanges(renderOptions) && file.status === 'done' && file.convertedBlob) {
         const url = URL.createObjectURL(file.convertedBlob);
-        setPreviewProcessed(url);
-      } else if (hasAdjustments || hasHSL || hasLut || hasCrop || hasTransform) {
+        setProcessedPreview(url, true);
+      } else if (hasRenderableChanges(renderOptions)) {
         let img = imageCache.current.get(file.id);
         if (!img) {
           img = await loadImage(stableUrl);
           imageCache.current.set(file.id, img);
         }
 
-        let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
-        let srcW = img.naturalWidth;
-        let srcH = img.naturalHeight;
-
-        // Apply transform first (rotate + flip)
-        if (hasTransform) {
-          const transformed = applyTransformToCanvas(img, transformState);
-          srcCanvas = transformed;
-          srcW = transformed.width;
-          srcH = transformed.height;
-        }
-
-        // Apply crop second
-        if (hasCrop) {
-          const cropX = Math.round(cropState.rect.x * srcW);
-          const cropY = Math.round(cropState.rect.y * srcH);
-          const cropW = Math.round(cropState.rect.width * srcW);
-          const cropH = Math.round(cropState.rect.height * srcH);
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = cropW;
-          tempCanvas.height = cropH;
-          const tempCtx = tempCanvas.getContext('2d')!;
-          tempCtx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-          srcCanvas = tempCanvas;
-          srcW = cropW;
-          srcH = cropH;
-        }
-
-        // High-quality adaptive proxy preview: keep source untouched for export pipeline.
-        const previewMaxEdge = isMobile ? 1400 : 2200;
-        const canvas = document.createElement('canvas');
-        const scale = Math.min(1, previewMaxEdge / Math.max(srcW, srcH));
-        canvas.width = Math.max(1, Math.round(srcW * scale));
-        canvas.height = Math.max(1, Math.round(srcH * scale));
-        const ctx = canvas.getContext('2d')!;
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(srcCanvas, 0, 0, canvas.width, canvas.height);
-
-        // Bail if a newer generation was requested (slider moved again)
         if (genId !== previewGenRef.current) return;
 
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const { data } = imageData;
-        const w = canvas.width;
-        const h = canvas.height;
-
-        // Apply adjustments in order
-        if (adjustments.exposure !== 0) editing.adjustExposure(data, w, h, adjustments.exposure);
-        if (adjustments.contrast !== 0) editing.adjustContrast(data, w, h, adjustments.contrast);
-        if (adjustments.highlights !== 0) editing.adjustHighlights(data, w, h, adjustments.highlights);
-        if (adjustments.shadows !== 0) editing.adjustShadows(data, w, h, adjustments.shadows);
-        if (adjustments.whites !== 0) editing.adjustWhites(data, w, h, adjustments.whites);
-        if (adjustments.blacks !== 0) editing.adjustBlacks(data, w, h, adjustments.blacks);
-        if (adjustments.temperature !== 0) editing.adjustTemperature(data, w, h, adjustments.temperature);
-        if (adjustments.tint !== 0) editing.adjustTint(data, w, h, adjustments.tint);
-        if (adjustments.vibrance !== 0) editing.adjustVibrance(data, w, h, adjustments.vibrance);
-        if (adjustments.saturation !== 0) editing.adjustSaturation(data, w, h, adjustments.saturation);
-        if (adjustments.clarity !== 0) editing.adjustClarity(data, w, h, adjustments.clarity);
-        if (adjustments.sharpness !== 0) editing.adjustSharpness(data, w, h, adjustments.sharpness);
-        if (adjustments.denoise !== 0) editing.adjustDenoise(data, w, h, adjustments.denoise);
-        if (adjustments.vignette !== 0) editing.applyVignette(data, w, h, adjustments.vignette);
-        if (adjustments.grain !== 0) editing.applyFilmGrain(data, w, h, adjustments.grain);
-        if (adjustments.fog !== 0) editing.applyFog(data, w, h, adjustments.fog);
-
-        // Bail if stale before HSL (heaviest section)
+        const canvas = renderEditedCanvas(img, renderOptions);
         if (genId !== previewGenRef.current) return;
-
-        // Apply HSL
-        for (const [channel, adj] of Object.entries(hslState)) {
-          if (adj.hue !== 0 || adj.saturation !== 0 || adj.luminance !== 0) {
-            editing.adjustHSL(data, w, h, channel, adj.hue, adj.saturation, adj.luminance);
-          }
-        }
-
-        // Apply LUT last
-        if (hasLut && activeLut?.data) {
-          applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
-        }
-
-        // Final stale check before committing to state
-        if (genId !== previewGenRef.current) return;
-
-        ctx.putImageData(imageData, 0, 0);
-        setPreviewProcessed(canvas.toDataURL('image/jpeg', 0.94));
+        setProcessedPreview(canvas.toDataURL('image/jpeg', 0.94));
       } else {
-        setPreviewProcessed(null);
+        setProcessedPreview(null);
       }
     } catch (err) {
       console.error('Preview error:', err);
     }
-  }, [activeLut, intensity, adjustments, hslState, cropState, transformState, applyTransformToCanvas]);
+  }, [
+    activeLut,
+    intensity,
+    adjustments,
+    hslState,
+    cropState,
+    transformState,
+    isMobile,
+    setProcessedPreview,
+  ]);
 
   // ── Update preview when selection, LUT, or adjustments change ──
   // Debounced: waits 80ms after the last change before generating preview.
@@ -466,7 +461,7 @@ const WildSauraApp: React.FC = () => {
   useEffect(() => {
     if (!selectedFile) {
       setPreviewOriginal(null);
-      setPreviewProcessed(null);
+      setProcessedPreview(null);
       return;
     }
 
@@ -475,7 +470,7 @@ const WildSauraApp: React.FC = () => {
     }, 80);
 
     return () => clearTimeout(timer);
-  }, [selectedFile, activeLutId, intensity, adjustments, hslState, cropState, transformState, generatePreview]);
+  }, [selectedFile, activeLutId, intensity, adjustments, hslState, cropState, transformState, generatePreview, setProcessedPreview]);
 
   // ── Handle files added ──
   const handleFilesAdded = useCallback(async (newFiles: File[]) => {
@@ -507,6 +502,7 @@ const WildSauraApp: React.FC = () => {
 
     setFiles((prev) => {
       const updated = [...prev, ...items];
+      filesRef.current = updated;
       // Auto-select first if none selected
       if (!selectedId && updated.length > 0) {
         setSelectedId(items[0].id);
@@ -519,7 +515,7 @@ const WildSauraApp: React.FC = () => {
     // Auto-convert if enabled
     if (settings.autoConvert) {
       setTimeout(() => {
-        items.forEach((item) => processFile(item.id));
+        items.forEach((item) => processFileRef.current(item.id));
       }, 100);
     }
   }, [selectedId, settings.autoConvert, showToast]);
@@ -529,7 +525,7 @@ const WildSauraApp: React.FC = () => {
     setFiles((prev) => prev.map((f) => f.id === fileId ? { ...f, status: 'processing' as const } : f));
 
     try {
-      const file = files.find((f) => f.id === fileId);
+      const file = filesRef.current.find((f) => f.id === fileId);
       if (!file) throw new Error('File not found');
 
       // Load image
@@ -540,117 +536,31 @@ const WildSauraApp: React.FC = () => {
         imageCache.current.set(fileId, img);
       }
 
-      // Apply transform first (rotate + flip), then crop, then resize4k
-      const hasTransform = transformState.rotation !== 0 || transformState.flipH || transformState.flipV;
-      const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
-      let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
-      let w = img.naturalWidth;
-      let h = img.naturalHeight;
-
-      if (hasTransform) {
-        const transformed = applyTransformToCanvas(img, transformState);
-        srcCanvas = transformed;
-        w = transformed.width;
-        h = transformed.height;
-      }
-
-      if (hasCrop) {
-        const cropX = Math.round(cropState.rect.x * w);
-        const cropY = Math.round(cropState.rect.y * h);
-        const cropW = Math.round(cropState.rect.width * w);
-        const cropH = Math.round(cropState.rect.height * h);
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = cropW;
-        tempCanvas.height = cropH;
-        const tempCtx = tempCanvas.getContext('2d')!;
-        tempCtx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-        srcCanvas = tempCanvas;
-        w = cropW;
-        h = cropH;
-      }
-
-      if (settings.resize4k && w > 3840) {
-        const scale = 3840 / w;
-        w = 3840;
-        h = Math.round(h * scale);
-      }
-
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(srcCanvas, 0, 0, w, h);
-
-      // Apply adjustments at full resolution
-      const hasAdjustments = Object.entries(adjustments).some(([_, v]) => v !== 0);
-      const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
-      const hasLut = activeLut && activeLut.data;
-
-      if (hasAdjustments || hasHSL || hasLut) {
-        const imageData = ctx.getImageData(0, 0, w, h);
-        const { data } = imageData;
-
-        // Apply adjustments in order
-        if (adjustments.exposure !== 0) editing.adjustExposure(data, w, h, adjustments.exposure);
-        if (adjustments.contrast !== 0) editing.adjustContrast(data, w, h, adjustments.contrast);
-        if (adjustments.highlights !== 0) editing.adjustHighlights(data, w, h, adjustments.highlights);
-        if (adjustments.shadows !== 0) editing.adjustShadows(data, w, h, adjustments.shadows);
-        if (adjustments.whites !== 0) editing.adjustWhites(data, w, h, adjustments.whites);
-        if (adjustments.blacks !== 0) editing.adjustBlacks(data, w, h, adjustments.blacks);
-        if (adjustments.temperature !== 0) editing.adjustTemperature(data, w, h, adjustments.temperature);
-        if (adjustments.tint !== 0) editing.adjustTint(data, w, h, adjustments.tint);
-        if (adjustments.vibrance !== 0) editing.adjustVibrance(data, w, h, adjustments.vibrance);
-        if (adjustments.saturation !== 0) editing.adjustSaturation(data, w, h, adjustments.saturation);
-        if (adjustments.clarity !== 0) editing.adjustClarity(data, w, h, adjustments.clarity);
-        if (adjustments.sharpness !== 0) editing.adjustSharpness(data, w, h, adjustments.sharpness);
-        if (adjustments.denoise !== 0) editing.adjustDenoise(data, w, h, adjustments.denoise);
-        if (adjustments.vignette !== 0) editing.applyVignette(data, w, h, adjustments.vignette);
-        if (adjustments.grain !== 0) editing.applyFilmGrain(data, w, h, adjustments.grain);
-        if (adjustments.fog !== 0) editing.applyFog(data, w, h, adjustments.fog);
-
-        // Apply HSL
-        for (const [channel, adj] of Object.entries(hslState)) {
-          if (adj.hue !== 0 || adj.saturation !== 0 || adj.luminance !== 0) {
-            editing.adjustHSL(data, w, h, channel, adj.hue, adj.saturation, adj.luminance);
-          }
-        }
-
-        // Apply LUT last
-        if (hasLut && activeLut?.data) {
-          applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
-        }
-
-        ctx.putImageData(imageData, 0, 0);
-      }
-
-      // Convert to WebP
-      const blob: Blob = await new Promise((resolve, reject) => {
-        if (settings.lossless) {
-          canvas.toBlob(
-            (b) => (b ? resolve(b) : reject(new Error('Blob creation failed'))),
-            'image/webp',
-            1.0
-          );
-        } else {
-          canvas.toBlob(
-            (b) => (b ? resolve(b) : reject(new Error('Blob creation failed'))),
-            'image/webp',
-            settings.quality / 100
-          );
-        }
+      const canvas = renderEditedCanvas(img, {
+        adjustments,
+        hslState,
+        cropState,
+        transformState,
+        activeLut,
+        intensity,
+        resizeTo4K: settings.resize4k,
+        exportProfile: settings.exportProfile,
       });
-
-      // Generate output name
-      let outName = file.name.replace(/\.[^.]+$/, '');
-      if (settings.smartName && activeLut) {
-        outName += `_${activeLut.name.replace(/\s+/g, '-').toLowerCase()}`;
-      }
-      outName += '.webp';
+      const encoded = await encodeCanvas(canvas, settings);
+      const blob = encoded.blob;
+      const outName = createOutputFileName(file.name, settings.smartName, activeLut?.name, encoded.extension);
 
       setFiles((prev) =>
         prev.map((f) =>
           f.id === fileId
-            ? { ...f, status: 'done' as const, convertedBlob: blob, convertedSize: blob.size }
+            ? {
+                ...f,
+                status: 'done' as const,
+                convertedBlob: blob,
+                convertedSize: blob.size,
+                convertedName: outName,
+                convertedFormat: encoded.format,
+              }
             : f
         )
       );
@@ -666,8 +576,8 @@ const WildSauraApp: React.FC = () => {
             preset: activeLut?.name || 'None',
             intensity,
             quality: settings.quality,
-            width: w,
-            height: h,
+            width: canvas.width,
+            height: canvas.height,
             savedPercentage: Math.round((1 - blob.size / file.originalSize) * 100),
             createdAt: Date.now(),
           });
@@ -688,7 +598,11 @@ const WildSauraApp: React.FC = () => {
       );
       showToast(`Error: ${err.message || 'Conversion failed'}`, 'error');
     }
-  }, [files, activeLut, intensity, settings, user, showToast, adjustments, hslState, cropState, transformState, applyTransformToCanvas]);
+  }, [activeLut, intensity, settings, user, showToast, adjustments, hslState, cropState, transformState]);
+
+  useEffect(() => {
+    processFileRef.current = processFile;
+  }, [processFile]);
 
   // ── Process all pending ──
   const processAll = useCallback(async () => {
@@ -711,11 +625,7 @@ const WildSauraApp: React.FC = () => {
     if (!file.convertedBlob) return;
     const url = URL.createObjectURL(file.convertedBlob);
     const a = document.createElement('a');
-    let outName = file.name.replace(/\.[^.]+$/, '');
-    if (settings.smartName && activeLut) {
-      outName += `_${activeLut.name.replace(/\s+/g, '-').toLowerCase()}`;
-    }
-    outName += '.webp';
+    const outName = file.convertedName || createOutputFileName(file.name, settings.smartName, activeLut?.name, 'webp');
     a.href = url;
     a.download = outName;
     a.click();
@@ -731,11 +641,7 @@ const WildSauraApp: React.FC = () => {
     const zip = new JSZip();
 
     for (const file of doneFiles) {
-      let outName = file.name.replace(/\.[^.]+$/, '');
-      if (settings.smartName && activeLut) {
-        outName += `_${activeLut.name.replace(/\s+/g, '-').toLowerCase()}`;
-      }
-      outName += '.webp';
+      const outName = file.convertedName || createOutputFileName(file.name, settings.smartName, activeLut?.name, 'webp');
       zip.file(outName, file.convertedBlob!);
     }
 
@@ -767,7 +673,13 @@ const WildSauraApp: React.FC = () => {
   // ── Reset all statuses ──
   const resetAll = useCallback(() => {
     setFiles((prev) => prev.map((f) => ({
-      ...f, status: 'pending' as const, convertedBlob: undefined, convertedSize: undefined, error: undefined,
+      ...f,
+      status: 'pending' as const,
+      convertedBlob: undefined,
+      convertedSize: undefined,
+      convertedName: undefined,
+      convertedFormat: undefined,
+      error: undefined,
     })));
     showToast('Reset all files', 'info');
   }, [showToast]);
@@ -781,9 +693,9 @@ const WildSauraApp: React.FC = () => {
     originalUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
     originalUrlsRef.current.clear();
     setPreviewOriginal(null);
-    setPreviewProcessed(null);
+    setProcessedPreview(null);
     showToast('Cleared all files', 'info');
-  }, [showToast]);
+  }, [showToast, setProcessedPreview]);
 
   // ── Add custom LUT ──
   const addCustomLut = useCallback((preset: LUTPreset) => {
@@ -836,92 +748,33 @@ const WildSauraApp: React.FC = () => {
         imageCache.current.set(selectedFile.id, img);
       }
 
-      // Apply transform
-      const hasTransform = transformState.rotation !== 0 || transformState.flipH || transformState.flipV;
-      const hasCrop = cropState.rect.x !== 0 || cropState.rect.y !== 0 || cropState.rect.width !== 1 || cropState.rect.height !== 1;
-      let srcCanvas: HTMLCanvasElement | HTMLImageElement = img;
-      let w = img.naturalWidth;
-      let h = img.naturalHeight;
-
-      if (hasTransform) {
-        const transformed = applyTransformToCanvas(img, transformState);
-        srcCanvas = transformed;
-        w = transformed.width;
-        h = transformed.height;
-      }
-      if (hasCrop) {
-        const cropX = Math.round(cropState.rect.x * w);
-        const cropY = Math.round(cropState.rect.y * h);
-        const cropW = Math.round(cropState.rect.width * w);
-        const cropH = Math.round(cropState.rect.height * h);
-        const tc = document.createElement('canvas');
-        tc.width = cropW; tc.height = cropH;
-        tc.getContext('2d')!.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-        srcCanvas = tc;
-        w = cropW; h = cropH;
-      }
-
-      // Resize to max 2048 for cloud save (balance quality + speed)
-      if (w > 2048) { const s = 2048 / w; h = Math.round(h * s); w = 2048; }
-
-      const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d')!;
-      ctx.drawImage(srcCanvas, 0, 0, w, h);
-
-      // Apply all adjustments
-      const hasAdj = Object.entries(adjustments).some(([_, v]) => v !== 0);
-      const hasHSL = Object.values(hslState).some(ch => ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0);
-      const hasLut = activeLut && activeLut.data;
-
-      if (hasAdj || hasHSL || hasLut) {
-        const imageData = ctx.getImageData(0, 0, w, h);
-        const { data } = imageData;
-        if (adjustments.exposure !== 0) editing.adjustExposure(data, w, h, adjustments.exposure);
-        if (adjustments.contrast !== 0) editing.adjustContrast(data, w, h, adjustments.contrast);
-        if (adjustments.highlights !== 0) editing.adjustHighlights(data, w, h, adjustments.highlights);
-        if (adjustments.shadows !== 0) editing.adjustShadows(data, w, h, adjustments.shadows);
-        if (adjustments.whites !== 0) editing.adjustWhites(data, w, h, adjustments.whites);
-        if (adjustments.blacks !== 0) editing.adjustBlacks(data, w, h, adjustments.blacks);
-        if (adjustments.temperature !== 0) editing.adjustTemperature(data, w, h, adjustments.temperature);
-        if (adjustments.tint !== 0) editing.adjustTint(data, w, h, adjustments.tint);
-        if (adjustments.vibrance !== 0) editing.adjustVibrance(data, w, h, adjustments.vibrance);
-        if (adjustments.saturation !== 0) editing.adjustSaturation(data, w, h, adjustments.saturation);
-        if (adjustments.clarity !== 0) editing.adjustClarity(data, w, h, adjustments.clarity);
-        if (adjustments.sharpness !== 0) editing.adjustSharpness(data, w, h, adjustments.sharpness);
-        if (adjustments.denoise !== 0) editing.adjustDenoise(data, w, h, adjustments.denoise);
-        if (adjustments.vignette !== 0) editing.applyVignette(data, w, h, adjustments.vignette);
-        if (adjustments.grain !== 0) editing.applyFilmGrain(data, w, h, adjustments.grain);
-        if (adjustments.fog !== 0) editing.applyFog(data, w, h, adjustments.fog);
-        for (const [channel, adj] of Object.entries(hslState)) {
-          if (adj.hue !== 0 || adj.saturation !== 0 || adj.luminance !== 0) {
-            editing.adjustHSL(data, w, h, channel, adj.hue, adj.saturation, adj.luminance);
-          }
-        }
-        if (hasLut && activeLut?.data) {
-          applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
-        }
-        ctx.putImageData(imageData, 0, 0);
-      }
-
-      // Create blob and upload
-      const blob: Blob = await new Promise((resolve, reject) => {
-        canvas.toBlob(
-          (b) => (b ? resolve(b) : reject(new Error('Blob creation failed'))),
-          'image/webp', 0.88
-        );
+      const canvas = renderEditedCanvas(img, {
+        adjustments,
+        hslState,
+        cropState,
+        transformState,
+        activeLut,
+        intensity,
+        maxEdge: 2048,
       });
+      const encoded = await encodeCanvas(canvas, settings);
+      const outName = createOutputFileName(
+        selectedFile.name,
+        settings.smartName,
+        activeLut?.name,
+        encoded.extension,
+        '_edited',
+      );
 
-      const outName = selectedFile.name.replace(/\.[^.]+$/, '') + '_edited.webp';
-      await saveEdit(user.uid, blob, outName, w, h, activeLut?.name || 'None');
-      showToast('Saved to cloud! Available for 24 hours ☁️', 'success');
+      await saveEdit(user.uid, encoded.blob, outName, canvas.width, canvas.height, activeLut?.name || 'None');
+      showToast('Saved to cloud! Available for 24 hours', 'success');
     } catch (err: any) {
       console.error('Save edit error:', err);
       showToast(`Save failed: ${err.message || 'Unknown error'}`, 'error');
     } finally {
       setIsSavingEdit(false);
     }
-  }, [user, selectedFile, adjustments, hslState, activeLut, intensity, cropState, transformState, applyTransformToCanvas, showToast]);
+  }, [user, selectedFile, adjustments, hslState, activeLut, intensity, cropState, transformState, settings, showToast]);
 
   // ── Reset adjustments (NEW) ──
   const resetAdjustments = useCallback(() => {
