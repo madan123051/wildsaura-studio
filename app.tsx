@@ -22,6 +22,7 @@ import * as editing from './utils/imageEditing';
 import { BUILT_IN_PRESETS } from './utils/presetData';
 import { applyLUT } from './utils/imageProcessor';
 import { BUILT_IN_LUTS } from './utils/lutData';
+import { getCinematicPreset } from './utils/cinematicPresets';
 import './styles.css';
 
 declare const JSZip: any;
@@ -261,6 +262,10 @@ const WildSauraApp: React.FC = () => {
   const [isProcessingAll, setIsProcessingAll] = useState(false);
   const [previewOriginal, setPreviewOriginal] = useState<string | null>(null);
   const [previewProcessed, setPreviewProcessed] = useState<string | null>(null);
+
+  // ── AI Cinematic State ──
+  const [isAICinematicLoading, setIsAICinematicLoading] = useState(false);
+  const [aiCinematicCategory, setAiCinematicCategory] = useState<string | null>(null);
 
   // ── Refs ──
   const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -920,6 +925,58 @@ const WildSauraApp: React.FC = () => {
     showToast('Reset all adjustments', 'info');
   }, [showToast]);
 
+  // ── AI Cinematic handler ──
+  const handleAICinematic = useCallback(async () => {
+    if (!selectedFile) {
+      showToast('Please select an image first', 'error');
+      return;
+    }
+    
+    setIsAICinematicLoading(true);
+    setAiCinematicCategory(null);
+    
+    try {
+      // Get image as base64 data URL
+      let stableUrl = originalUrlsRef.current.get(selectedFile.id);
+      if (!stableUrl) {
+        stableUrl = URL.createObjectURL(selectedFile.file);
+        originalUrlsRef.current.set(selectedFile.id, stableUrl);
+      }
+      
+      // Convert file to base64
+      const dataUrl = await fileToDataUrl(selectedFile.file);
+      const base64 = dataUrl.split(',')[1];
+      const mimeType = selectedFile.file.type || 'image/jpeg';
+      
+      // Call the Vercel serverless function
+      const response = await fetch('/api/classify-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageData: base64, mimeType }),
+      });
+      
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Classification failed');
+      }
+      
+      const { category } = await response.json();
+      setAiCinematicCategory(category);
+      
+      // Apply the cinematic preset
+      const preset = getCinematicPreset(category);
+      setAdjustments({ ...DEFAULT_ADJUSTMENTS, ...preset.adjustments });
+      setHslState({ ...DEFAULT_HSL_STATE, ...preset.hslOverrides });
+      
+      showToast(`✨ AI Cinematic: ${category.replace(/_/g, ' ')}`, 'success');
+    } catch (err: any) {
+      console.error('AI Cinematic error:', err);
+      showToast(`AI Cinematic failed: ${err.message}`, 'error');
+    } finally {
+      setIsAICinematicLoading(false);
+    }
+  }, [selectedFile, showToast]);
+
   // ─── Auth screen ──────────────────────────────────────────
   if (!guestMode && !user && !authLoading) {
     return <Auth onSkip={() => setGuestMode(true)} />;
@@ -1288,6 +1345,9 @@ const WildSauraApp: React.FC = () => {
                     onSaveEdit={handleSaveEdit}
                     isSavingEdit={isSavingEdit}
                     isLoggedIn={!!user}
+                    onAICinematic={handleAICinematic}
+                    isAICinematicLoading={isAICinematicLoading}
+                    aiCinematicCategory={aiCinematicCategory}
                   />
                 </aside>
               )}
@@ -1384,6 +1444,9 @@ const WildSauraApp: React.FC = () => {
                     onSaveEdit={handleSaveEdit}
                     isSavingEdit={isSavingEdit}
                     isLoggedIn={!!user}
+                    onAICinematic={handleAICinematic}
+                    isAICinematicLoading={isAICinematicLoading}
+                    aiCinematicCategory={aiCinematicCategory}
                   />
                 </div>
               )}
