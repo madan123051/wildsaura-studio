@@ -629,82 +629,98 @@ const EditPanel: React.FC<EditPanelProps> = ({
         scrollbarColor: 'rgba(255,255,255,0.08) transparent',
       }}
     >
-      {/* ── Section: AI Cinematic ────────────────────────────── */}
+      {/* ── Section: AI Enhance ─────────────────────────────── */}
       <Section
-        title="AI Cinematic"
-        icon="🤖"
+        title="AI Enhance"
+        icon="✦"
         hasNonZero={!!aiCinematicCategory}
         defaultOpen={true}
       >
-        <div style={{ padding: '4px 0 8px' }}>
-          <p style={{
-            fontSize: 11,
-            color: 'rgba(255,255,255,0.5)',
-            margin: '0 0 10px 0',
-            lineHeight: 1.5,
-          }}>
-            Gemini AI analyzes your photo and applies the perfect cinematic color grade.
+        <div style={{ padding: '2px 0 8px' }}>
+          <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.42)', margin: '0 0 10px', lineHeight: 1.6 }}>
+            Gemini analyzes your photo and precision-tunes every slider for a cinematic result.
           </p>
 
+          {/* Detected Scene Badge */}
           {aiCinematicCategory && (
             <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '6px 10px',
-              borderRadius: 8,
-              marginBottom: 8,
-              background: 'rgba(99,102,241,0.1)',
-              border: '1px solid rgba(99,102,241,0.2)',
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '7px 10px', borderRadius: 8, marginBottom: 10,
+              background: 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(168,85,247,0.08))',
+              border: '1px solid rgba(99,102,241,0.22)',
             }}>
-              <span style={{ fontSize: 14 }}>
-                {aiCinematicCategory === 'STREET_NIGHT' && '🌆'}
+              <span style={{ fontSize: 18, lineHeight: 1 }}>
+                {aiCinematicCategory === 'STREET_NIGHT'    && '🌆'}
                 {aiCinematicCategory === 'NATURE_WILDLIFE' && '🌿'}
                 {aiCinematicCategory === 'PORTRAIT_PEOPLE' && '👤'}
-                {aiCinematicCategory === 'LANDSCAPE_DAY' && '🏔️'}
-                {aiCinematicCategory === 'MINIMAL_MOODY' && '🌫️'}
-                {!['STREET_NIGHT', 'NATURE_WILDLIFE', 'PORTRAIT_PEOPLE', 'LANDSCAPE_DAY', 'MINIMAL_MOODY'].includes(aiCinematicCategory) && '🎬'}
+                {aiCinematicCategory === 'LANDSCAPE_DAY'   && '🏔️'}
+                {aiCinematicCategory === 'MINIMAL_MOODY'   && '🌫️'}
+                {aiCinematicCategory === 'MACRO_DETAIL'    && '🔬'}
+                {aiCinematicCategory === 'GOLDEN_HOUR'     && '🌅'}
+                {aiCinematicCategory === 'BLUE_HOUR'       && '🌊'}
+                {!['STREET_NIGHT','NATURE_WILDLIFE','PORTRAIT_PEOPLE','LANDSCAPE_DAY',
+                   'MINIMAL_MOODY','MACRO_DETAIL','GOLDEN_HOUR','BLUE_HOUR'].includes(aiCinematicCategory) && '🎬'}
               </span>
-              <div>
-                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>Detected:</div>
-                <div style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: '#a78bfa',
-                }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.32)', letterSpacing: '0.5px', textTransform: 'uppercase', marginBottom: 1 }}>
+                  Scene Detected
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {aiCinematicCategory.replace(/_/g, ' ')}
                 </div>
               </div>
+              <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 6px rgba(74,222,128,0.7)', flexShrink: 0 }} />
             </div>
           )}
 
+          {/* Main Button */}
           <button
             onClick={onAICinematic}
             disabled={isAICinematicLoading}
             style={{
-              width: '100%',
-              padding: '9px 0',
-              borderRadius: 7,
-              border: 'none',
-              fontWeight: 700,
-              fontSize: 12,
+              width: '100%', padding: '10px 0', borderRadius: 8, border: 'none',
+              fontWeight: 700, fontSize: 12, letterSpacing: '0.3px',
               cursor: isAICinematicLoading ? 'not-allowed' : 'pointer',
               background: isAICinematicLoading
-                ? 'rgba(99,102,241,0.2)'
-                : 'linear-gradient(135deg, #6366f1, #8b5cf6, #ec4899)',
-              color: isAICinematicLoading ? 'rgba(255,255,255,0.4)' : '#fff',
+                ? 'rgba(99,102,241,0.12)'
+                : 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 55%, #c026d3 100%)',
+              color: isAICinematicLoading ? 'rgba(255,255,255,0.3)' : '#fff',
               transition: 'all 0.2s',
-              boxShadow: isAICinematicLoading ? 'none' : '0 4px 15px rgba(99,102,241,0.3)',
+              boxShadow: isAICinematicLoading ? 'none' : '0 4px 18px rgba(99,102,241,0.38)',
             }}
           >
             {isAICinematicLoading ? (
-              <span>⏳ Analyzing image…</span>
+              <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <span style={{
+                  display: 'inline-block', width: 11, height: 11, borderRadius: '50%',
+                  border: '2px solid rgba(255,255,255,0.12)',
+                  borderTopColor: 'rgba(255,255,255,0.55)',
+                  animation: 'spin 0.75s linear infinite',
+                }} />
+                Analyzing with Gemini…
+              </span>
             ) : (
-              <span>✨ Auto-Detect & Apply</span>
+              <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+                <span style={{ fontSize: 13 }}>✦</span>
+                Auto-Detect &amp; Apply
+              </span>
             )}
           </button>
+
+          {/* Powered by Gemini */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, marginTop: 6 }}>
+            <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.22)', letterSpacing: '0.5px' }}>POWERED BY</span>
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: '0.8px',
+              background: 'linear-gradient(90deg, #4285f4, #34a853, #fbbc05, #ea4335)',
+              WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
+              opacity: 0.65,
+            }}>GEMINI</span>
+          </div>
         </div>
       </Section>
+
+
 
       {/* ── Section 0: Crop ──────────────────────────────────── */}
       <Section

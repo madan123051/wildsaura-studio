@@ -283,11 +283,15 @@ const WildSauraApp: React.FC = () => {
   const filesRef = useRef<FileItem[]>([]);
   const processFileRef = useRef<(fileId: string) => Promise<void>>(async () => {});
   const previewGenRef = useRef(0); // generation counter for stale-check
+  const adjustmentsRef = useRef<EditAdjustments>({ ...DEFAULT_ADJUSTMENTS });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   useEffect(() => {
     filesRef.current = files;
   }, [files]);
+
+  // Keep adjustmentsRef in sync for animation closures
+  useEffect(() => { adjustmentsRef.current = adjustments; }, [adjustments]);
 
   const setProcessedPreview = useCallback((url: string | null, isObjectUrl = false) => {
     if (processedPreviewUrlRef.current) {
@@ -803,71 +807,88 @@ const WildSauraApp: React.FC = () => {
     showToast('Reset all adjustments', 'info');
   }, [showToast]);
 
-  // ── AI Cinematic handler ──
+  // ── AI Enhance handler — Gemini precision analysis ──
   const handleAICinematic = useCallback(async () => {
-    if (!selectedFile) {
-      showToast('Please select an image first', 'error');
-      return;
-    }
-    
+    if (!selectedFile) { showToast('Please select an image first', 'error'); return; }
+
     setIsAICinematicLoading(true);
     setAiCinematicCategory(null);
-    
+
     try {
-      // Get image as base64 data URL
       let stableUrl = originalUrlsRef.current.get(selectedFile.id);
       if (!stableUrl) {
         stableUrl = URL.createObjectURL(selectedFile.file);
         originalUrlsRef.current.set(selectedFile.id, stableUrl);
       }
-      
-      // Convert file to base64
+
       const dataUrl = await fileToDataUrl(selectedFile.file);
       const base64 = dataUrl.split(',')[1];
       const mimeType = selectedFile.file.type || 'image/jpeg';
       const safeFileName = sanitizeFileName(selectedFile.file.name);
       const payload = { imageData: typeof base64 === 'string' ? base64 : '', mimeType };
-      if (!payload.imageData.trim()) throw new Error('Invalid image data for AI analysis');
-      console.info('[AI_CINEMATIC_REQUEST]', { fileName: safeFileName, mimeType, renderMode: settings.exportProfile, stage: 'before-request' });
-      
-      // Call the Vercel serverless function
-      const response = await fetch('/api/classify-image', {
+      if (!payload.imageData.trim()) throw new Error('Invalid image data');
+      console.info('[AI_ENHANCE_REQUEST]', { fileName: safeFileName, mimeType });
+
+      const response = await fetch('/api/ai-enhance', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Classification failed');
-      }
-      
-      const aiResult = await response.json();
-      const category = typeof aiResult?.category === 'string' ? aiResult.category : 'NATURE_WILDLIFE';
-      setAiCinematicCategory(category);
+      if (!response.ok) { const e = await response.json(); throw new Error(e.error || 'AI failed'); }
 
-      // Apply the cinematic preset
-      const preset = getCinematicPreset(category);
-      setAdjustments({ ...DEFAULT_ADJUSTMENTS, ...preset.adjustments });
-      setHslState({ ...DEFAULT_HSL_STATE, ...preset.hslOverrides });
-      
-      const normalizedPresetId = normalizePresetId(category);
-      console.info('[AI_CINEMATIC_SUCCESS]', { presetId: normalizedPresetId, fileName: safeFileName, mimeType, stage: 'after-response' });
-      showToast(`✨ AI Cinematic: ${category.replace(/_/g, ' ')}`, 'success');
+      const aiResult = await response.json();
+      const s = aiResult.settings || {};
+      const scene = typeof s.detected_scene === 'string' ? s.detected_scene : 'NATURE_WILDLIFE';
+      setAiCinematicCategory(scene);
+
+      const num = (v: any, def: number) => (typeof v === 'number' ? v : def);
+      const targetAdj: EditAdjustments = {
+        ...DEFAULT_ADJUSTMENTS,
+        exposure:    num(s.exposure,    0),
+        highlights:  num(s.highlights, -15),
+        shadows:     num(s.shadows,    10),
+        contrast:    num(s.contrast,   12),
+        temperature: num(s.temperature, 0),
+        tint:        num(s.tint,        0),
+        vibrance:    num(s.vibrance,   10),
+        saturation:  num(s.saturation,  0),
+        clarity:     num(s.clarity,    15),
+        sharpness:   num(s.sharpness,  20),
+        denoise:     num(s.denoise,    10),
+        vignette:    num(s.vignette,   15),
+        grain:       num(s.grain,       5),
+        fog:         num(s.fog,         0),
+        whites:      num(s.whites,      0),
+        blacks:      num(s.blacks,      0),
+      };
+
+      // Animate sliders: smoothly sweep from current → AI values (750ms ease-out)
+      const fromAdj = { ...adjustmentsRef.current };
+      const ANIM_DURATION = 750;
+      const animStart = performance.now();
+      const keys = Object.keys(fromAdj) as (keyof EditAdjustments)[];
+
+      const animFrame = (now: number) => {
+        const t = Math.min(1, (now - animStart) / ANIM_DURATION);
+        const ease = 1 - Math.pow(1 - t, 3); // cubic ease-out
+        const interpolated = { ...fromAdj };
+        for (const k of keys) {
+          interpolated[k] = Math.round(fromAdj[k] + (targetAdj[k] - fromAdj[k]) * ease);
+        }
+        setAdjustments(interpolated);
+        if (t < 1) requestAnimationFrame(animFrame);
+      };
+      requestAnimationFrame(animFrame);
+
+      console.info('[AI_ENHANCE_SUCCESS]', { scene, fileName: safeFileName });
+      showToast(`✦ AI Enhanced: ${scene.replace(/_/g, ' ')}`, 'success');
     } catch (err: any) {
-      console.error('[AI_CINEMATIC_ERROR]', {
-        error: err?.message || 'unknown',
-        fileName: selectedFile?.file?.name,
-        mimeType: selectedFile?.file?.type || 'image/jpeg',
-        stage: 'handleAICinematic',
-      });
-      setAdjustments({ ...DEFAULT_ADJUSTMENTS });
-      setHslState({ ...DEFAULT_HSL_STATE });
-      showToast('Unable to process this image preset. Trying recovery mode with a safe cinematic profile.', 'error');
+      console.error('[AI_ENHANCE_ERROR]', { error: err?.message || 'unknown', fileName: selectedFile?.file?.name });
+      showToast('AI enhancement failed. Please try again.', 'error');
     } finally {
       setIsAICinematicLoading(false);
     }
-  }, [selectedFile, settings.exportProfile, showToast]);
+  }, [selectedFile, showToast]);
 
   // ─── Auth screen ──────────────────────────────────────────
   if (!guestMode && !user && !authLoading) {
