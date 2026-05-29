@@ -75,9 +75,16 @@ export default async function handler(req: any, res: any) {
     const ai = new GoogleGenAI({ apiKey });
     console.info('[AI_ENHANCE_REQUEST]', { mimeType, imageLength: imageData.length });
 
+    // Fix: use proper Content object with role + parts array
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: [{ inlineData: { data: imageData, mimeType } }, AI_ENHANCE_PROMPT],
+      contents: [{
+        role: 'user',
+        parts: [
+          { inlineData: { data: imageData, mimeType } },
+          { text: AI_ENHANCE_PROMPT }
+        ]
+      }],
     });
 
     const rawText = (response.text || '').trim();
