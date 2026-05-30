@@ -740,7 +740,7 @@ const EditPanel: React.FC<EditPanelProps> = ({
           onClick={onAutoCrop}
           disabled={isAutoCropLoading}
           style={{
-            width: '100%', padding: '8px 0', marginBottom: 8, borderRadius: 7, border: 'none',
+            width: '100%', padding: '8px 0', marginBottom: 8, borderRadius: 7,
             fontWeight: 700, fontSize: 11, letterSpacing: '0.2px',
             cursor: isAutoCropLoading ? 'not-allowed' : 'pointer',
             background: isAutoCropLoading
