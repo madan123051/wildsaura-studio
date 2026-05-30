@@ -104,15 +104,27 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     if (!onCropChange) return;
     const f = getFrameInfo();
     if (!f) return;
-    const sw = f.iW * s;
-    const sh = f.iH * s;
-    const vw = Math.min(1, f.fW / sw);
-    const vh = Math.min(1, f.fH / sh);
-    let rx = 0.5 - px / sw - vw / 2;
-    let ry = 0.5 - py / sh - vh / 2;
-    rx = Math.max(0, Math.min(1 - vw, rx));
-    ry = Math.max(0, Math.min(1 - vh, ry));
-    onCropChange({ x: rx, y: ry, width: vw, height: vh });
+
+    // Total size of the image at current scale
+    const scaledW = f.iW * s;
+    const scaledH = f.iH * s;
+
+    // Normalized width/height of the crop frame relative to the scaled image
+    const vw = f.fW / scaledW;
+    const vh = f.fH / scaledH;
+
+    // Calculate normalized X and Y
+    // px/py are offsets from the center of the image
+    // (scaledW - f.fW) / 2 is the offset to align the left edge of the frame with the left edge of the image
+    const rx = ((scaledW - f.fW) / 2 - px) / scaledW;
+    const ry = ((scaledH - f.fH) / 2 - py) / scaledH;
+
+    onCropChange({
+      x: Math.max(0, Math.min(1 - vw, rx)),
+      y: Math.max(0, Math.min(1 - vh, ry)),
+      width: Math.min(1, vw),
+      height: Math.min(1, vh)
+    });
   }, [onCropChange, getFrameInfo]);
 
   /* ── Ref bridges for native listeners ── */

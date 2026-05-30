@@ -502,31 +502,14 @@ const EditPanel: React.FC<EditPanelProps> = ({
         onCropStateChange({ ...cropState, aspect });
         return;
       }
-      // Parse aspect ratio
-      const ratioMap: Record<string, number> = {
-        '1:1': 1,
-        '4:3': 4 / 3,
-        '3:2': 3 / 2,
-        '16:9': 16 / 9,
-        '9:16': 9 / 16,
-        '5:4': 5 / 4,
-      };
-      const ratio = ratioMap[aspect] || 1;
-      // Fit new rect centered in current image (1x1 space)
-      let newW: number, newH: number;
-      if (ratio >= 1) {
-        newW = 1;
-        newH = 1 / ratio;
-      } else {
-        newH = 1;
-        newW = ratio;
-      }
-      const newX = (1 - newW) / 2;
-      const newY = (1 - newH) / 2;
+
+      // We need the image's actual aspect ratio to calculate the correct normalized rect.
+      // Since we don't have it here, we'll let ImagePreview handle the rect calculation
+      // by just updating the aspect and letting its useEffect trigger a re-calculation.
       onCropStateChange({
         ...cropState,
         aspect,
-        rect: { x: newX, y: newY, width: newW, height: newH },
+        isActive: true
       });
     },
     [cropState, onCropStateChange]
