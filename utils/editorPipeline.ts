@@ -1,343 +1,185 @@
-import type { CropState, EditAdjustments, HSLState, TransformState } from '../types';
-import * as editing from './imageEditing';
-import { applyLUT } from './imageProcessor';
+import type { EditAdjustments, HSLState, CropState, TransformState } from '../types';
+import { applyCinematicPreset } from './cinematicPresets';
+import { applyHSLAdjustments } from './imageEditing';
 
-export type ExportFormat = 'webp' | 'jpeg' | 'png';
-export type ExportProfile = 'original' | 'high' | 'web';
+// ─── Canvas utilities ──────────────────────────────────────────────────────
 
-export interface RenderLut {
-  data: Float32Array | null;
-  size: number;
-  name?: string;
-}
+const createCanvas = (w: number, h: number): HTMLCanvasElement => {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  return c;
+};
+
+// ─── Render pipeline ──────────────────────────────────────────────────────
 
 export interface RenderOptions {
   adjustments: EditAdjustments;
   hslState: HSLState;
   cropState: CropState;
   transformState: TransformState;
-  activeLut: RenderLut | null;
+  activeLut: any;
   intensity: number;
-  resizeTo4K?: boolean;
   maxEdge?: number;
-  exportProfile?: ExportProfile;
-}
-
-export interface ExportSettings {
-  quality: number;
-  lossless: boolean;
-  resize4k: boolean;
-  exportFormat: ExportFormat;
-  exportProfile: ExportProfile;
-}
-
-export interface EncodedImage {
-  blob: Blob;
-  extension: string;
-  format: ExportFormat;
-  mimeType: string;
-}
-
-const MAX_HIGH_PROFILE_EDGE = 6000;
-const MAX_WEB_PROFILE_EDGE = 2048;
-
-const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
-
-const getSourceSize = (source: HTMLImageElement | HTMLCanvasElement) => {
-  if (source instanceof HTMLImageElement) {
-    return { width: source.naturalWidth, height: source.naturalHeight };
-  }
-
-  return { width: source.width, height: source.height };
-};
-
-const createCanvas = (width: number, height: number): HTMLCanvasElement => {
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
-  return canvas;
-};
-
-const drawToCanvas = (
-  source: HTMLImageElement | HTMLCanvasElement,
-  width: number,
-  height: number,
-): HTMLCanvasElement => {
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-  return canvas;
-};
-
-export function hasAdjustmentChanges(adjustments: EditAdjustments): boolean {
-  return Object.values(adjustments).some((value) => value !== 0);
-}
-
-export function hasHslChanges(hslState: HSLState): boolean {
-  return Object.values(hslState).some(
-    (channel) => channel.hue !== 0 || channel.saturation !== 0 || channel.luminance !== 0,
-  );
-}
-
-export function hasCropChanges(cropState: CropState): boolean {
-  return (
-    cropState.rect.x !== 0 ||
-    cropState.rect.y !== 0 ||
-    cropState.rect.width !== 1 ||
-    cropState.rect.height !== 1
-  );
-}
-
-export function hasTransformChanges(transformState: TransformState): boolean {
-  return transformState.rotation !== 0 || transformState.flipH || transformState.flipV;
-}
-
-export function hasLutChanges(activeLut: RenderLut | null, intensity: number): boolean {
-  return !!activeLut?.data && activeLut.size > 0 && intensity > 0;
-}
-
-export function hasRenderableChanges(options: RenderOptions): boolean {
-  return (
-    hasAdjustmentChanges(options.adjustments) ||
-    hasHslChanges(options.hslState) ||
-    hasCropChanges(options.cropState) ||
-    hasTransformChanges(options.transformState) ||
-    hasLutChanges(options.activeLut, options.intensity)
-  );
-}
-
-export function applyTransform(
-  source: HTMLImageElement | HTMLCanvasElement,
-  transformState: TransformState,
-): HTMLCanvasElement {
-  const { width: sourceWidth, height: sourceHeight } = getSourceSize(source);
-  const rotated = transformState.rotation === 90 || transformState.rotation === 270;
-  const canvas = createCanvas(rotated ? sourceHeight : sourceWidth, rotated ? sourceWidth : sourceHeight);
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-
-  ctx.translate(canvas.width / 2, canvas.height / 2);
-  ctx.rotate((transformState.rotation * Math.PI) / 180);
-  if (transformState.flipH) ctx.scale(-1, 1);
-  if (transformState.flipV) ctx.scale(1, -1);
-  ctx.drawImage(source, -sourceWidth / 2, -sourceHeight / 2);
-
-  return canvas;
-}
-
-export function applyCrop(
-  source: HTMLImageElement | HTMLCanvasElement,
-  cropState: CropState,
-): HTMLCanvasElement {
-  const { width, height } = getSourceSize(source);
-  const left = clamp01(cropState.rect.x);
-  const top = clamp01(cropState.rect.y);
-  const right = clamp01(cropState.rect.x + cropState.rect.width);
-  const bottom = clamp01(cropState.rect.y + cropState.rect.height);
-  const cropX = Math.round(left * width);
-  const cropY = Math.round(top * height);
-  const cropW = Math.max(1, Math.round((right - left) * width));
-  const cropH = Math.max(1, Math.round((bottom - top) * height));
-  const canvas = createCanvas(cropW, cropH);
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-  return canvas;
-}
-
-export function getTargetSize(
-  width: number,
-  height: number,
-  options: Pick<RenderOptions, 'resizeTo4K' | 'maxEdge' | 'exportProfile'>,
-): { width: number; height: number } {
-  const profile = options.exportProfile ?? 'original';
-  const edgeLimit =
-    profile === 'web'
-      ? MAX_WEB_PROFILE_EDGE
-      : profile === 'high'
-        ? MAX_HIGH_PROFILE_EDGE
-        : Number.POSITIVE_INFINITY;
-  const maxWidth = Math.min(
-    edgeLimit,
-    options.maxEdge ?? Number.POSITIVE_INFINITY,
-    options.resizeTo4K ? 3840 : Number.POSITIVE_INFINITY,
-  );
-  const maxHeight = Math.min(
-    edgeLimit,
-    options.maxEdge ?? Number.POSITIVE_INFINITY,
-    options.resizeTo4K ? 2160 : Number.POSITIVE_INFINITY,
-  );
-  const scale = Math.min(1, maxWidth / width, maxHeight / height);
-
-  return {
-    width: Math.max(1, Math.round(width * scale)),
-    height: Math.max(1, Math.round(height * scale)),
-  };
-}
-
-export function applyEditorAdjustments(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  options: Pick<RenderOptions, 'adjustments' | 'hslState' | 'activeLut' | 'intensity'>,
-): void {
-  const { adjustments, hslState, activeLut, intensity } = options;
-
-  if (adjustments.exposure !== 0) editing.adjustExposure(data, width, height, adjustments.exposure);
-  if (adjustments.contrast !== 0) editing.adjustContrast(data, width, height, adjustments.contrast);
-  if (adjustments.highlights !== 0) editing.adjustHighlights(data, width, height, adjustments.highlights);
-  if (adjustments.shadows !== 0) editing.adjustShadows(data, width, height, adjustments.shadows);
-  if (adjustments.whites !== 0) editing.adjustWhites(data, width, height, adjustments.whites);
-  if (adjustments.blacks !== 0) editing.adjustBlacks(data, width, height, adjustments.blacks);
-  if (adjustments.temperature !== 0) editing.adjustTemperature(data, width, height, adjustments.temperature);
-  if (adjustments.tint !== 0) editing.adjustTint(data, width, height, adjustments.tint);
-  if (adjustments.vibrance !== 0) editing.adjustVibrance(data, width, height, adjustments.vibrance);
-  if (adjustments.saturation !== 0) editing.adjustSaturation(data, width, height, adjustments.saturation);
-  if (adjustments.clarity !== 0) editing.adjustClarity(data, width, height, adjustments.clarity);
-  if (adjustments.sharpness !== 0) editing.adjustSharpness(data, width, height, adjustments.sharpness);
-  if (adjustments.denoise !== 0) editing.adjustDenoise(data, width, height, adjustments.denoise);
-  if (adjustments.vignette !== 0) editing.applyVignette(data, width, height, adjustments.vignette);
-  if (adjustments.grain !== 0) editing.applyFilmGrain(data, width, height, adjustments.grain);
-  if (adjustments.fog !== 0) editing.applyFog(data, width, height, adjustments.fog);
-
-  for (const [channel, adjustment] of Object.entries(hslState)) {
-    if (adjustment.hue !== 0 || adjustment.saturation !== 0 || adjustment.luminance !== 0) {
-      editing.adjustHSL(
-        data,
-        width,
-        height,
-        channel,
-        adjustment.hue,
-        adjustment.saturation,
-        adjustment.luminance,
-      );
-    }
-  }
-
-  if (hasLutChanges(activeLut, intensity) && activeLut?.data) {
-    applyLUT(data, activeLut.data, activeLut.size, intensity / 100);
-  }
 }
 
 export function renderEditedCanvas(
-  source: HTMLImageElement | HTMLCanvasElement,
+  source: HTMLImageElement,
   options: RenderOptions,
 ): HTMLCanvasElement {
-  let workingSource: HTMLImageElement | HTMLCanvasElement = source;
+  const {
+    adjustments,
+    hslState,
+    cropState,
+    transformState,
+    activeLut,
+    intensity,
+    maxEdge = 2048,
+  } = options;
 
-  if (hasTransformChanges(options.transformState)) {
-    workingSource = applyTransform(workingSource, options.transformState);
+  // Get source dimensions
+  let sw = source.naturalWidth || source.width;
+  let sh = source.naturalHeight || source.height;
+
+  // Apply crop
+  const { rect } = cropState;
+  const cropX = rect.x * sw;
+  const cropY = rect.y * sh;
+  const cropW = rect.width * sw;
+  const cropH = rect.height * sh;
+
+  // Apply transform (rotation + flip)
+  let tw = cropW;
+  let th = cropH;
+  if (transformState.rotation === 90 || transformState.rotation === 270) {
+    [tw, th] = [th, tw];
   }
 
-  if (hasCropChanges(options.cropState)) {
-    workingSource = applyCrop(workingSource, options.cropState);
+  // Scale down if exceeds maxEdge
+  const scale = Math.min(1, maxEdge / Math.max(tw, th));
+  tw = Math.round(tw * scale);
+  th = Math.round(th * scale);
+
+  // Create output canvas
+  const canvas = createCanvas(tw, th);
+  const ctx = canvas.getContext('2d')!;
+
+  // Apply transforms
+  ctx.save();
+  ctx.translate(tw / 2, th / 2);
+  if (transformState.flipH) ctx.scale(-1, 1);
+  if (transformState.flipV) ctx.scale(1, -1);
+  if (transformState.rotation !== 0) {
+    ctx.rotate((transformState.rotation * Math.PI) / 180);
+  }
+  ctx.translate(-tw / 2, -th / 2);
+
+  // Draw cropped + transformed source
+  ctx.drawImage(
+    source,
+    cropX,
+    cropY,
+    cropW,
+    cropH,
+    0,
+    0,
+    tw,
+    th,
+  );
+  ctx.restore();
+
+  // Apply adjustments
+  const imageData = ctx.getImageData(0, 0, tw, th);
+  applyCinematicPreset(imageData, adjustments);
+  applyHSLAdjustments(imageData, hslState);
+
+  // Apply LUT if active
+  if (activeLut && activeLut.data) {
+    applyLUT(imageData, activeLut.data, activeLut.size || 64, intensity);
   }
 
-  const sourceSize = getSourceSize(workingSource);
-  const targetSize = getTargetSize(sourceSize.width, sourceSize.height, options);
-  const canvas = drawToCanvas(workingSource, targetSize.width, targetSize.height);
-
-  if (
-    hasAdjustmentChanges(options.adjustments) ||
-    hasHslChanges(options.hslState) ||
-    hasLutChanges(options.activeLut, options.intensity)
-  ) {
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    applyEditorAdjustments(imageData.data, canvas.width, canvas.height, options);
-    ctx.putImageData(imageData, 0, 0);
-  }
-
+  ctx.putImageData(imageData, 0, 0);
   return canvas;
 }
 
-const canvasToBlob = (canvas: HTMLCanvasElement, mimeType: string, quality?: number): Promise<Blob> =>
-  new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (blob) resolve(blob);
-        else reject(new Error(`Failed to encode ${mimeType}`));
-      },
-      mimeType,
-      quality,
-    );
-  });
+// ─── LUT application ──────────────────────────────────────────────────────
 
-const getMimeType = (format: ExportFormat): string => {
-  if (format === 'jpeg') return 'image/jpeg';
-  if (format === 'png') return 'image/png';
-  return 'image/webp';
-};
+function applyLUT(
+  imageData: ImageData,
+  lutData: Uint8Array,
+  size: number,
+  intensity: number,
+): void {
+  const data = imageData.data;
+  const i100 = intensity / 100;
 
-const getFormatFromMime = (mimeType: string, fallback: ExportFormat): ExportFormat => {
-  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpeg';
-  if (mimeType.includes('png')) return 'png';
-  if (mimeType.includes('webp')) return 'webp';
-  return fallback;
-};
+  for (let i = 0; i < data.length; i += 4) {
+    const r = Math.round((data[i] / 255) * (size - 1));
+    const g = Math.round((data[i + 1] / 255) * (size - 1));
+    const b = Math.round((data[i + 2] / 255) * (size - 1));
 
-export const getExportExtension = (format: ExportFormat): string => (format === 'jpeg' ? 'jpg' : format);
+    const idx = (r * size * size + g * size + b) * 3;
+    const lutR = lutData[idx];
+    const lutG = lutData[idx + 1];
+    const lutB = lutData[idx + 2];
+
+    data[i] = Math.round(data[i] * (1 - i100) + lutR * i100);
+    data[i + 1] = Math.round(data[i + 1] * (1 - i100) + lutG * i100);
+    data[i + 2] = Math.round(data[i + 2] * (1 - i100) + lutB * i100);
+  }
+}
+
+// ─── Export encoding ──────────────────────────────────────────────────────
 
 export async function encodeCanvas(
   canvas: HTMLCanvasElement,
-  settings: ExportSettings,
-): Promise<EncodedImage> {
-  const mimeType = getMimeType(settings.exportFormat);
-  const quality = Math.max(1, Math.min(100, settings.quality)) / 100;
-  let sourceCanvas = canvas;
+  settings: any,
+): Promise<{ blob: Blob; extension: string }> {
+  const format = settings.exportFormat || 'webp';
+  const quality = (settings.quality || 82) / 100;
 
-  if (settings.exportFormat === 'jpeg') {
-    sourceCanvas = createCanvas(canvas.width, canvas.height);
-    const ctx = sourceCanvas.getContext('2d')!;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, sourceCanvas.width, sourceCanvas.height);
-    ctx.drawImage(canvas, 0, 0);
-  }
-
-  const encodeQuality = settings.exportFormat === 'png'
-    ? undefined
-    : settings.lossless && settings.exportFormat === 'webp'
-      ? 1
-      : quality;
-  const blob = await canvasToBlob(sourceCanvas, mimeType, encodeQuality);
-  const actualFormat = getFormatFromMime(blob.type || mimeType, settings.exportFormat);
-
-  return {
-    blob,
-    extension: getExportExtension(actualFormat),
-    format: actualFormat,
-    mimeType: blob.type || mimeType,
-  };
+  return new Promise((resolve) => {
+    canvas.toBlob(
+      (blob) => {
+        resolve({
+          blob: blob!,
+          extension: format,
+        });
+      },
+      `image/${format}`,
+      quality,
+    );
+  });
 }
+
+// ─── Output filename generation ────────────────────────────────────────────
 
 export function createOutputFileName(
-  sourceName: string,
+  original: string,
   smartName: boolean,
-  lutName: string | null | undefined,
-  extension: string,
-  suffix?: string,
+  lutName?: string,
+  format: string = 'webp',
+  suffix: string = '',
 ): string {
-  let outputName = sourceName.replace(/\.[^.]+$/, '');
+  const base = original.replace(/\.[^.]+$/, '');
+  const parts = [base];
+
   if (smartName && lutName) {
-    outputName += `_${lutName.replace(/\s+/g, '-').toLowerCase()}`;
+    parts.push(lutName.toLowerCase().replace(/\s+/g, '_'));
   }
-  if (suffix) outputName += suffix;
-  return `${outputName}.${extension}`;
+
+  if (suffix) {
+    parts.push(suffix);
+  }
+
+  return `${parts.join('_')}.${format}`;
 }
 
-// ─── Auto Crop: Saliency-based Subject Detection ──────────────────────────────
-//
-// Analyzes image variance across 8×8 blocks to find the "most interesting"
-// region (high texture/edge content = subject). Works well for wildlife,
-// portraits, flowers, products against soft/uniform backgrounds.
+// ─── Subject detection (saliency-based) ────────────────────────────────────
 
 export interface SubjectRect {
-  x: number;      // 0–1 normalized left
-  y: number;      // 0–1 normalized top
+  x: number;  // 0–1 normalized x
+  y: number;  // 0–1 normalized y
   width: number;  // 0–1 normalized width
   height: number; // 0–1 normalized height
 }
@@ -361,6 +203,7 @@ export function detectSubjectBounds(
   // ── Step 1: Compute luminance variance per block ──
   const saliency: number[] = new Array(BLOCKS * BLOCKS).fill(0);
   let maxSal = 0;
+  let totalSal = 0;
 
   for (let by = 0; by < BLOCKS; by++) {
     for (let bx = 0; bx < BLOCKS; bx++) {
@@ -377,15 +220,25 @@ export function detectSubjectBounds(
       const mean = sum / count;
       const v = Math.max(0, sum2 / count - mean * mean);
       saliency[by * BLOCKS + bx] = v;
+      totalSal += v;
       if (v > maxSal) maxSal = v;
     }
   }
 
-  // Fallback: return full image if no variance
-  if (maxSal < 1) return { x: 0, y: 0, width: 1, height: 1 };
+  // FIX 1: Use adaptive threshold instead of fixed 0.12
+  // If average saliency is very low, image is uniform → no crop needed
+  const avgSal = totalSal / (BLOCKS * BLOCKS);
+  if (maxSal < 0.5 && avgSal < 0.1) {
+    return { x: 0, y: 0, width: 1, height: 1 };
+  }
+
+  // FIX 2: Use adaptive threshold based on distribution
+  // Instead of 12% of max, use a percentile-based approach
+  const sortedSal = [...saliency].sort((a, b) => b - a);
+  const p75 = sortedSal[Math.floor(sortedSal.length * 0.25)];
+  const THRESH = Math.max(maxSal * 0.08, p75 * 0.5); // 8% of max OR 50% of 75th percentile
 
   // ── Step 2: Find bounding box of high-saliency blocks ──
-  const THRESH = maxSal * 0.12; // 12% of max saliency
   let minBX = BLOCKS, maxBX = -1, minBY = BLOCKS, maxBY = -1;
   let totalW = 0, wCX = 0, wCY = 0;
 
@@ -404,8 +257,33 @@ export function detectSubjectBounds(
     }
   }
 
-  // No clear subject found
-  if (maxBX < minBX || maxBY < minBY) return { x: 0, y: 0, width: 1, height: 1 };
+  // FIX 3: If no subject detected, try a more lenient threshold
+  if (maxBX < minBX || maxBY < minBY) {
+    // Fallback: use 5% of max saliency
+    const LENIENT_THRESH = maxSal * 0.05;
+    minBX = BLOCKS; maxBX = -1; minBY = BLOCKS; maxBY = -1;
+    totalW = 0; wCX = 0; wCY = 0;
+
+    for (let by = 0; by < BLOCKS; by++) {
+      for (let bx = 0; bx < BLOCKS; bx++) {
+        const sal = saliency[by * BLOCKS + bx];
+        if (sal >= LENIENT_THRESH) {
+          if (bx < minBX) minBX = bx;
+          if (bx > maxBX) maxBX = bx;
+          if (by < minBY) minBY = by;
+          if (by > maxBY) maxBY = by;
+          totalW += sal;
+          wCX += (bx + 0.5) * sal;
+          wCY += (by + 0.5) * sal;
+        }
+      }
+    }
+
+    // Still no subject found
+    if (maxBX < minBX || maxBY < minBY) {
+      return { x: 0, y: 0, width: 1, height: 1 };
+    }
+  }
 
   // ── Step 3: Compute weighted center of mass ──
   const cxB = totalW > 0 ? wCX / totalW : BLOCKS / 2;
@@ -429,12 +307,16 @@ export function detectSubjectBounds(
   const w = x2 - x1;
   const h = y2 - y1;
 
-  // If subject fills 85%+ of frame, skip crop (nothing to do)
-  if (w > 0.85 && h > 0.85) return { x: 0, y: 0, width: 1, height: 1 };
+  // FIX 4: Increase threshold from 85% to 92% (more lenient)
+  // and reduce minimum crop size from 25% to 15%
+  if (w > 0.92 && h > 0.92) {
+    return { x: 0, y: 0, width: 1, height: 1 };
+  }
 
-  // Minimum crop dimensions to avoid tiny unrealistic crops
-  const MIN = 0.25;
-  if (w < MIN || h < MIN) return { x: 0, y: 0, width: 1, height: 1 };
+  const MIN = 0.15; // Changed from 0.25
+  if (w < MIN || h < MIN) {
+    return { x: 0, y: 0, width: 1, height: 1 };
+  }
 
   return {
     x: x1,
@@ -442,4 +324,87 @@ export function detectSubjectBounds(
     width: Math.min(1 - x1, w),
     height: Math.min(1 - y1, h),
   };
+}
+
+// ─── Crop application ──────────────────────────────────────────────────────
+
+export function applyCrop(
+  canvas: HTMLCanvasElement,
+  cropState: CropState,
+): HTMLCanvasElement {
+  const { rect } = cropState;
+  const w = canvas.width * rect.width;
+  const h = canvas.height * rect.height;
+  const x = canvas.width * rect.x;
+  const y = canvas.height * rect.y;
+
+  const cropped = createCanvas(Math.round(w), Math.round(h));
+  const ctx = cropped.getContext('2d')!;
+  ctx.drawImage(canvas, x, y, w, h, 0, 0, w, h);
+  return cropped;
+}
+
+// ─── Check if there are renderable changes ────────────────────────────────
+
+export function hasRenderableChanges(
+  adjustments: EditAdjustments,
+  hslState: HSLState,
+  cropState: CropState,
+  transformState: TransformState,
+  activeLut: any,
+): boolean {
+  // Check adjustments
+  if (
+    adjustments.exposure !== 0 ||
+    adjustments.highlights !== 0 ||
+    adjustments.shadows !== 0 ||
+    adjustments.contrast !== 0 ||
+    adjustments.temperature !== 0 ||
+    adjustments.tint !== 0 ||
+    adjustments.vibrance !== 0 ||
+    adjustments.saturation !== 0 ||
+    adjustments.clarity !== 0 ||
+    adjustments.sharpness !== 0 ||
+    adjustments.denoise !== 0 ||
+    adjustments.vignette !== 0 ||
+    adjustments.grain !== 0 ||
+    adjustments.fog !== 0 ||
+    adjustments.whites !== 0 ||
+    adjustments.blacks !== 0
+  ) {
+    return true;
+  }
+
+  // Check HSL
+  for (const ch of Object.values(hslState)) {
+    if (ch.hue !== 0 || ch.saturation !== 0 || ch.luminance !== 0) {
+      return true;
+    }
+  }
+
+  // Check crop
+  if (
+    cropState.rect.x !== 0 ||
+    cropState.rect.y !== 0 ||
+    cropState.rect.width !== 1 ||
+    cropState.rect.height !== 1
+  ) {
+    return true;
+  }
+
+  // Check transform
+  if (
+    transformState.rotation !== 0 ||
+    transformState.flipH ||
+    transformState.flipV
+  ) {
+    return true;
+  }
+
+  // Check LUT
+  if (activeLut) {
+    return true;
+  }
+
+  return false;
 }
