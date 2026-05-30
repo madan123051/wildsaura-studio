@@ -1,6 +1,5 @@
 import type { EditAdjustments, HSLState, CropState, TransformState } from '../types';
-import { applyCinematicPreset } from './cinematicPresets';
-import { applyHSLAdjustments } from './imageEditing';
+import * as editing from './imageEditing';
 
 // ─── Canvas utilities ──────────────────────────────────────────────────────
 
@@ -21,6 +20,7 @@ export interface RenderOptions {
   activeLut: any;
   intensity: number;
   maxEdge?: number;
+  resizeTo4K?: boolean;
 }
 
 export function renderEditedCanvas(
@@ -35,6 +35,7 @@ export function renderEditedCanvas(
     activeLut,
     intensity,
     maxEdge = 2048,
+    resizeTo4K = false,
   } = options;
 
   // Get source dimensions
@@ -55,8 +56,11 @@ export function renderEditedCanvas(
     [tw, th] = [th, tw];
   }
 
+  // Handle 4K resize if requested
+  const effectiveMaxEdge = resizeTo4K ? 3840 : maxEdge;
+
   // Scale down if exceeds maxEdge
-  const scale = Math.min(1, maxEdge / Math.max(tw, th));
+  const scale = Math.min(1, effectiveMaxEdge / Math.max(tw, th));
   tw = Math.round(tw * scale);
   th = Math.round(th * scale);
 
@@ -90,8 +94,37 @@ export function renderEditedCanvas(
 
   // Apply adjustments
   const imageData = ctx.getImageData(0, 0, tw, th);
-  applyCinematicPreset(imageData, adjustments);
-  applyHSLAdjustments(imageData, hslState);
+  
+  // Light
+  if (adjustments.exposure !== 0) editing.adjustExposure(imageData.data, tw, th, adjustments.exposure);
+  if (adjustments.contrast !== 0) editing.adjustContrast(imageData.data, tw, th, adjustments.contrast);
+  if (adjustments.highlights !== 0) editing.adjustHighlights(imageData.data, tw, th, adjustments.highlights);
+  if (adjustments.shadows !== 0) editing.adjustShadows(imageData.data, tw, th, adjustments.shadows);
+  if (adjustments.whites !== 0) editing.adjustWhites(imageData.data, tw, th, adjustments.whites);
+  if (adjustments.blacks !== 0) editing.adjustBlacks(imageData.data, tw, th, adjustments.blacks);
+  
+  // Color
+  if (adjustments.temperature !== 0) editing.adjustTemperature(imageData.data, tw, th, adjustments.temperature);
+  if (adjustments.tint !== 0) editing.adjustTint(imageData.data, tw, th, adjustments.tint);
+  if (adjustments.vibrance !== 0) editing.adjustVibrance(imageData.data, tw, th, adjustments.vibrance);
+  if (adjustments.saturation !== 0) editing.adjustSaturation(imageData.data, tw, th, adjustments.saturation);
+  
+  // Details
+  if (adjustments.clarity !== 0) editing.adjustClarity(imageData.data, tw, th, adjustments.clarity);
+  if (adjustments.sharpness !== 0) editing.adjustSharpness(imageData.data, tw, th, adjustments.sharpness);
+  if (adjustments.denoise !== 0) editing.adjustDenoise(imageData.data, tw, th, adjustments.denoise);
+  
+  // Creative
+  if (adjustments.vignette !== 0) editing.applyVignette(imageData.data, tw, th, adjustments.vignette);
+  if (adjustments.grain !== 0) editing.applyFilmGrain(imageData.data, tw, th, adjustments.grain);
+  if (adjustments.fog !== 0) editing.applyFog(imageData.data, tw, th, adjustments.fog);
+
+  // Apply HSL
+  for (const [channel, state] of Object.entries(hslState)) {
+    if (state.hue !== 0 || state.saturation !== 0 || state.luminance !== 0) {
+      editing.adjustHSL(imageData.data, tw, th, channel, state.hue, state.saturation, state.luminance);
+    }
+  }
 
   // Apply LUT if active
   if (activeLut && activeLut.data) {
@@ -134,7 +167,7 @@ function applyLUT(
 export async function encodeCanvas(
   canvas: HTMLCanvasElement,
   settings: any,
-): Promise<{ blob: Blob; extension: string }> {
+): Promise<{ blob: Blob; extension: string; format: string }> {
   const format = settings.exportFormat || 'webp';
   const quality = (settings.quality || 82) / 100;
 
@@ -144,6 +177,7 @@ export async function encodeCanvas(
         resolve({
           blob: blob!,
           extension: format,
+          format: format,
         });
       },
       `image/${format}`,

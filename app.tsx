@@ -454,10 +454,10 @@ const WildSauraApp: React.FC = () => {
         maxEdge: isMobile ? 1600 : 3840,
       };
 
-      if (!hasRenderableChanges(renderOptions) && file.status === 'done' && file.convertedBlob) {
+      if (!hasRenderableChanges(adjustments, hslState, cropState, transformState, activeLut) && file.status === 'done' && file.convertedBlob) {
         const url = URL.createObjectURL(file.convertedBlob);
         setProcessedPreview(url, true);
-      } else if (hasRenderableChanges(renderOptions)) {
+      } else if (hasRenderableChanges(adjustments, hslState, cropState, transformState, activeLut)) {
         let img = imageCache.current.get(file.id);
         if (!img) {
           img = await loadImage(stableUrl);
@@ -589,7 +589,6 @@ const WildSauraApp: React.FC = () => {
         activeLut,
         intensity,
         resizeTo4K: settings.resize4k,
-        exportProfile: settings.exportProfile,
       });
       const encoded = await encodeCanvas(canvas, settings);
       const blob = encoded.blob;
@@ -604,7 +603,7 @@ const WildSauraApp: React.FC = () => {
                 convertedBlob: blob,
                 convertedSize: blob.size,
                 convertedName: outName,
-                convertedFormat: encoded.format,
+                convertedFormat: encoded.format as 'webp' | 'jpeg' | 'png',
               }
             : f
         )
