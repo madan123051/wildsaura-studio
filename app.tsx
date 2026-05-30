@@ -23,6 +23,7 @@ import { getCinematicPreset } from './utils/cinematicPresets';
 import { isSupportedImageFile, normalizePresetId, sanitizeFileName } from './utils/inputSafety';
 import {
   createOutputFileName,
+  detectSubjectBounds,
   encodeCanvas,
   hasRenderableChanges,
   renderEditedCanvas,
@@ -68,6 +69,29 @@ const fileToDataUrl = (file: File): Promise<string> =>
     reader.onload = () => resolve(reader.result as string);
     reader.readAsDataURL(file);
   });
+
+// Resize + re-encode an image file to JPEG at maxPx on the longest edge.
+// Used before sending to AI API to avoid massive payloads (50-100 MB RAW).
+const resizeImageForApi = async (
+  file: File,
+  maxPx = 1280,
+): Promise<{ base64: string; mimeType: string }> => {
+  const url = await fileToDataUrl(file);
+  const img = await loadImage(url);
+  const nw = img.naturalWidth || maxPx;
+  const nh = img.naturalHeight || maxPx;
+  const scale = Math.min(1, maxPx / Math.max(nw, nh));
+  const w = Math.max(1, Math.round(nw * scale));
+  const h = Math.max(1, Math.round(nh * scale));
+  const cvs = document.createElement('canvas');
+  cvs.width = w; cvs.height = h;
+  const ctx = cvs.getContext('2d')!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, w, h);
+  const dataUrl = cvs.toDataURL('image/jpeg', 0.88);
+  return { base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' };
+};
 
 // ─── User Menu Component ──────────────────────────────────
 
@@ -285,6 +309,7 @@ const WildSauraApp: React.FC = () => {
   const previewGenRef = useRef(0); // generation counter for stale-check
   const adjustmentsRef = useRef<EditAdjustments>({ ...DEFAULT_ADJUSTMENTS });
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [isAutoCropLoading, setIsAutoCropLoading] = useState(false);
 
   useEffect(() => {
     filesRef.current = files;
@@ -425,7 +450,8 @@ const WildSauraApp: React.FC = () => {
         transformState,
         activeLut,
         intensity,
-        maxEdge: isMobile ? 1400 : 2200,
+        // Higher edge = crisper preview for large/high-res photos
+        maxEdge: isMobile ? 1600 : 3840,
       };
 
       if (!hasRenderableChanges(renderOptions) && file.status === 'done' && file.convertedBlob) {
@@ -442,7 +468,18 @@ const WildSauraApp: React.FC = () => {
 
         const canvas = renderEditedCanvas(img, renderOptions);
         if (genId !== previewGenRef.current) return;
-        setProcessedPreview(canvas.toDataURL('image/jpeg', 0.94));
+        // Use blob URL: faster, more memory-efficient, and avoids JPEG double-encode blur
+        const blobUrl = await new Promise<string>((resolve, reject) => {
+          canvas.toBlob((b) => {
+            if (b) resolve(URL.createObjectURL(b));
+            else reject(new Error('toBlob failed'));
+          }, 'image/jpeg', 0.95);
+        });
+        if (genId !== previewGenRef.current) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        setProcessedPreview(blobUrl, true);
       } else {
         setProcessedPreview(null);
       }
@@ -744,6 +781,32 @@ const WildSauraApp: React.FC = () => {
     showToast('Crop applied', 'success');
   }, [showToast]);
 
+  // ── Auto Crop — saliency-based subject detection ──
+  const handleAutoCrop = useCallback(async () => {
+    if (!selectedFile) { showToast('Select an image first', 'error'); return; }
+    setIsAutoCropLoading(true);
+    try {
+      let img = imageCache.current.get(selectedFile.id);
+      if (!img) {
+        let stableUrl = originalUrlsRef.current.get(selectedFile.id);
+        if (!stableUrl) {
+          stableUrl = URL.createObjectURL(selectedFile.file);
+          originalUrlsRef.current.set(selectedFile.id, stableUrl);
+        }
+        img = await loadImage(stableUrl);
+        imageCache.current.set(selectedFile.id, img);
+      }
+      const rect = detectSubjectBounds(img);
+      const isFullFrame = rect.x === 0 && rect.y === 0 && rect.width === 1 && rect.height === 1;
+      setCropState({ rect, aspect: 'free', isActive: false });
+      showToast(isFullFrame ? '✂️ Subject fills the frame — no crop needed' : '✨ Smart crop applied!', 'success');
+    } catch (err) {
+      showToast('Auto crop failed', 'error');
+    } finally {
+      setIsAutoCropLoading(false);
+    }
+  }, [selectedFile, showToast]);
+
   // ── Save edit to cloud (24h) ──
   const handleSaveEdit = useCallback(async () => {
     if (!user || !selectedFile) {
@@ -821,13 +884,12 @@ const WildSauraApp: React.FC = () => {
         originalUrlsRef.current.set(selectedFile.id, stableUrl);
       }
 
-      const dataUrl = await fileToDataUrl(selectedFile.file);
-      const base64 = dataUrl.split(',')[1];
-      const mimeType = selectedFile.file.type || 'image/jpeg';
       const safeFileName = sanitizeFileName(selectedFile.file.name);
-      const payload = { imageData: typeof base64 === 'string' ? base64 : '', mimeType };
-      if (!payload.imageData.trim()) throw new Error('Invalid image data');
-      console.info('[AI_ENHANCE_REQUEST]', { fileName: safeFileName, mimeType });
+      // Resize to max 1280px BEFORE sending — large RAW/JPEG files (50-100 MB)
+      // would exceed API body limits and cause failures otherwise.
+      console.info('[AI_ENHANCE_REQUEST]', { fileName: safeFileName, fileSize: selectedFile.file.size });
+      const { base64: resizedBase64, mimeType: resizedMime } = await resizeImageForApi(selectedFile.file, 1280);
+      const payload = { imageBuffer: resizedBase64, mimeType: resizedMime };
 
       const response = await fetch('/api/ai-enhance', {
         method: 'POST',
@@ -837,8 +899,11 @@ const WildSauraApp: React.FC = () => {
       if (!response.ok) { const e = await response.json(); throw new Error(e.error || 'AI failed'); }
 
       const aiResult = await response.json();
-      const s = aiResult.settings || {};
-      const scene = typeof s.detected_scene === 'string' ? s.detected_scene : 'NATURE_WILDLIFE';
+      // Support both new format (appliedSettings + genreDetected) and legacy (settings)
+      const s = aiResult.appliedSettings || aiResult.settings || {};
+      const scene = typeof aiResult.genreDetected === 'string'
+        ? aiResult.genreDetected
+        : typeof s.detected_scene === 'string' ? s.detected_scene : 'NATURE_WILDLIFE';
       setAiCinematicCategory(scene);
 
       const num = (v: any, def: number) => (typeof v === 'number' ? v : def);
@@ -1261,6 +1326,8 @@ const WildSauraApp: React.FC = () => {
                     onAICinematic={handleAICinematic}
                     isAICinematicLoading={isAICinematicLoading}
                     aiCinematicCategory={aiCinematicCategory}
+                    onAutoCrop={handleAutoCrop}
+                    isAutoCropLoading={isAutoCropLoading}
                   />
                 </aside>
               )}
@@ -1360,6 +1427,8 @@ const WildSauraApp: React.FC = () => {
                     onAICinematic={handleAICinematic}
                     isAICinematicLoading={isAICinematicLoading}
                     aiCinematicCategory={aiCinematicCategory}
+                    onAutoCrop={handleAutoCrop}
+                    isAutoCropLoading={isAutoCropLoading}
                   />
                 </div>
               )}

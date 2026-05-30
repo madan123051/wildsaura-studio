@@ -328,3 +328,118 @@ export function createOutputFileName(
   if (suffix) outputName += suffix;
   return `${outputName}.${extension}`;
 }
+
+// ─── Auto Crop: Saliency-based Subject Detection ──────────────────────────────
+//
+// Analyzes image variance across 8×8 blocks to find the "most interesting"
+// region (high texture/edge content = subject). Works well for wildlife,
+// portraits, flowers, products against soft/uniform backgrounds.
+
+export interface SubjectRect {
+  x: number;      // 0–1 normalized left
+  y: number;      // 0–1 normalized top
+  width: number;  // 0–1 normalized width
+  height: number; // 0–1 normalized height
+}
+
+export function detectSubjectBounds(
+  source: HTMLImageElement | HTMLCanvasElement,
+): SubjectRect {
+  const SAMPLE = 128;   // analysis canvas size
+  const BLOCK = 8;      // variance block size
+  const BLOCKS = SAMPLE / BLOCK; // 16 blocks per axis
+
+  // Draw source to small analysis canvas
+  const canvas = createCanvas(SAMPLE, SAMPLE);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(source, 0, 0, SAMPLE, SAMPLE);
+  const { data } = ctx.getImageData(0, 0, SAMPLE, SAMPLE);
+
+  // Luminance helper
+  const lum = (i: number) => data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+
+  // ── Step 1: Compute luminance variance per block ──
+  const saliency: number[] = new Array(BLOCKS * BLOCKS).fill(0);
+  let maxSal = 0;
+
+  for (let by = 0; by < BLOCKS; by++) {
+    for (let bx = 0; bx < BLOCKS; bx++) {
+      let sum = 0, sum2 = 0, count = 0;
+      for (let dy = 0; dy < BLOCK; dy++) {
+        for (let dx = 0; dx < BLOCK; dx++) {
+          const i = ((by * BLOCK + dy) * SAMPLE + (bx * BLOCK + dx)) * 4;
+          const l = lum(i);
+          sum += l;
+          sum2 += l * l;
+          count++;
+        }
+      }
+      const mean = sum / count;
+      const v = Math.max(0, sum2 / count - mean * mean);
+      saliency[by * BLOCKS + bx] = v;
+      if (v > maxSal) maxSal = v;
+    }
+  }
+
+  // Fallback: return full image if no variance
+  if (maxSal < 1) return { x: 0, y: 0, width: 1, height: 1 };
+
+  // ── Step 2: Find bounding box of high-saliency blocks ──
+  const THRESH = maxSal * 0.12; // 12% of max saliency
+  let minBX = BLOCKS, maxBX = -1, minBY = BLOCKS, maxBY = -1;
+  let totalW = 0, wCX = 0, wCY = 0;
+
+  for (let by = 0; by < BLOCKS; by++) {
+    for (let bx = 0; bx < BLOCKS; bx++) {
+      const sal = saliency[by * BLOCKS + bx];
+      if (sal >= THRESH) {
+        if (bx < minBX) minBX = bx;
+        if (bx > maxBX) maxBX = bx;
+        if (by < minBY) minBY = by;
+        if (by > maxBY) maxBY = by;
+        totalW += sal;
+        wCX += (bx + 0.5) * sal;
+        wCY += (by + 0.5) * sal;
+      }
+    }
+  }
+
+  // No clear subject found
+  if (maxBX < minBX || maxBY < minBY) return { x: 0, y: 0, width: 1, height: 1 };
+
+  // ── Step 3: Compute weighted center of mass ──
+  const cxB = totalW > 0 ? wCX / totalW : BLOCKS / 2;
+  const cyB = totalW > 0 ? wCY / totalW : BLOCKS / 2;
+
+  // Expand bounding box to include center of mass
+  const halfW = (maxBX - minBX + 1) * 0.5;
+  const halfH = (maxBY - minBY + 1) * 0.5;
+  const fMinBX = Math.min(minBX, Math.floor(cxB - halfW));
+  const fMaxBX = Math.max(maxBX, Math.ceil(cxB + halfW));
+  const fMinBY = Math.min(minBY, Math.floor(cyB - halfH));
+  const fMaxBY = Math.max(maxBY, Math.ceil(cyB + halfH));
+
+  // ── Step 4: Convert to [0,1] with padding ──
+  const PAD = 1.5; // padding in blocks
+  const x1 = Math.max(0, (fMinBX - PAD) / BLOCKS);
+  const y1 = Math.max(0, (fMinBY - PAD) / BLOCKS);
+  const x2 = Math.min(1, (fMaxBX + 1 + PAD) / BLOCKS);
+  const y2 = Math.min(1, (fMaxBY + 1 + PAD) / BLOCKS);
+
+  const w = x2 - x1;
+  const h = y2 - y1;
+
+  // If subject fills 85%+ of frame, skip crop (nothing to do)
+  if (w > 0.85 && h > 0.85) return { x: 0, y: 0, width: 1, height: 1 };
+
+  // Minimum crop dimensions to avoid tiny unrealistic crops
+  const MIN = 0.25;
+  if (w < MIN || h < MIN) return { x: 0, y: 0, width: 1, height: 1 };
+
+  return {
+    x: x1,
+    y: y1,
+    width: Math.min(1 - x1, w),
+    height: Math.min(1 - y1, h),
+  };
+}
