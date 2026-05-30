@@ -21,6 +21,16 @@ const FALLBACK_SETTINGS = {
 
 const FALLBACK_GENRE = 'NATURE_WILDLIFE';
 
+// ─── Auto Model Selection ─────────────────────────────────────────────────────
+// No hardcoded model — API tries each candidate in order until one succeeds.
+// Override anytime via GEMINI_MODEL env var in Vercel dashboard.
+const CANDIDATE_MODELS = [
+  process.env.GEMINI_MODEL,         // user override (Vercel env var)
+  'gemini-2.5-flash-preview-05-20', // latest Gemini 2.5 preview
+  'gemini-2.0-flash',               // stable + fast
+  'gemini-1.5-flash',               // reliable fallback
+].filter(Boolean) as string[];
+
 // ─── Gemini Prompt ────────────────────────────────────────────────────────────
 
 const AI_ENHANCE_PROMPT = `You are an expert AI Cinematic Colorist for WildSaura Studio.
@@ -58,6 +68,42 @@ Scene guidance for best results:
 
 Return ONLY raw JSON. No markdown. No extra text.`;
 
+// ─── Helper: try models in order ─────────────────────────────────────────────
+
+async function generateWithAutoModel(
+  ai: GoogleGenAI,
+  contents: any[],
+): Promise<{ response: any; modelUsed: string }> {
+  let lastError: any;
+  for (const model of CANDIDATE_MODELS) {
+    try {
+      console.info(`[AI_ENHANCE] Trying model: ${model}`);
+      const response = await ai.models.generateContent({ model, contents });
+      return { response, modelUsed: model };
+    } catch (err: any) {
+      const msg: string = err?.message || '';
+      const status: number = err?.status || err?.code || 0;
+      // Only continue to next model on model-not-found / permission errors
+      const isModelError =
+        status === 404 ||
+        msg.includes('not found') ||
+        msg.includes('404') ||
+        msg.includes('is not supported') ||
+        msg.includes('MODEL_NOT_FOUND') ||
+        msg.includes('permission') ||
+        msg.includes('PERMISSION_DENIED');
+      if (isModelError) {
+        console.warn(`[AI_ENHANCE] Model ${model} unavailable (${status}), trying next...`);
+        lastError = err;
+        continue;
+      }
+      // Non-model error (auth, quota, network) — throw immediately
+      throw err;
+    }
+  }
+  throw lastError || new Error('All Gemini models failed');
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export default async function handler(req: any, res: any) {
@@ -85,7 +131,7 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'Unsupported image format.' });
   }
 
-  // Guard against massive payloads (client should resize to max 1280px first)
+  // Guard against massive payloads
   if (imageData.length > MAX_BASE64_BYTES) {
     return res.status(413).json({
       error: `Image too large (${Math.round(imageData.length / 1024 / 1024)}MB). Please resize to max 1280px before sending.`,
@@ -100,16 +146,16 @@ export default async function handler(req: any, res: any) {
     const ai = new GoogleGenAI({ apiKey });
     console.info('[AI_ENHANCE] Analyzing image', { mimeType, sizeKB: Math.round(imageData.length / 1024) });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [{
-        role: 'user',
-        parts: [
-          { inlineData: { data: imageData, mimeType } },
-          { text: AI_ENHANCE_PROMPT },
-        ],
-      }],
-    });
+    const contents = [{
+      role: 'user',
+      parts: [
+        { inlineData: { data: imageData, mimeType } },
+        { text: AI_ENHANCE_PROMPT },
+      ],
+    }];
+
+    // Auto-selects the best available Gemini model — no hardcoded model name
+    const { response, modelUsed } = await generateWithAutoModel(ai, contents);
 
     // Clean Gemini response (strip markdown wrappers if any)
     const rawText = (response.text || '').trim();
@@ -147,11 +193,12 @@ export default async function handler(req: any, res: any) {
       ? parsed.detected_genre.toUpperCase().replace(/[^A-Z_]/g, '').slice(0, 30)
       : FALLBACK_GENRE;
 
-    console.info('[AI_ENHANCE] Success', { genreDetected });
+    console.info('[AI_ENHANCE] Success', { genreDetected, modelUsed });
     return res.status(200).json({
       success: true,
       genreDetected,
       appliedSettings,
+      modelUsed,
       // Legacy field for backward compat
       settings: { ...appliedSettings, detected_scene: genreDetected },
     });
