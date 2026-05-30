@@ -45,6 +45,8 @@ interface EditPanelProps {
   onAICinematic?: () => void;
   isAICinematicLoading?: boolean;
   aiCinematicCategory?: string | null;
+  onAutoCrop?: () => void;
+  isAutoCropLoading?: boolean;
 }
 
 // ─── Internal Slider ────────────────────────────────────────────────────────
@@ -443,6 +445,8 @@ const EditPanel: React.FC<EditPanelProps> = ({
   onAICinematic,
   isAICinematicLoading,
   aiCinematicCategory,
+  onAutoCrop,
+  isAutoCropLoading,
 }) => {
   const [selectedHslChannel, setSelectedHslChannel] = useState<string>('red');
 
@@ -731,6 +735,37 @@ const EditPanel: React.FC<EditPanelProps> = ({
           onCropStateChange({ ...DEFAULT_CROP_STATE });
         }}
       >
+        {/* ── Auto Crop (Smart Subject Detection) ── */}
+        <button
+          onClick={onAutoCrop}
+          disabled={isAutoCropLoading}
+          style={{
+            width: '100%', padding: '8px 0', marginBottom: 8, borderRadius: 7, border: 'none',
+            fontWeight: 700, fontSize: 11, letterSpacing: '0.2px',
+            cursor: isAutoCropLoading ? 'not-allowed' : 'pointer',
+            background: isAutoCropLoading
+              ? 'rgba(99,102,241,0.08)'
+              : 'linear-gradient(135deg, rgba(99,102,241,0.2), rgba(168,85,247,0.15))',
+            color: isAutoCropLoading ? 'rgba(255,255,255,0.3)' : '#c4b5fd',
+            border: '1px solid rgba(99,102,241,0.25)',
+            transition: 'all 0.2s',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+          }}
+        >
+          {isAutoCropLoading ? (
+            <>
+              <span style={{
+                display: 'inline-block', width: 11, height: 11, borderRadius: '50%',
+                border: '2px solid rgba(255,255,255,0.12)', borderTopColor: '#a78bfa',
+                animation: 'spin 0.75s linear infinite',
+              }} />
+              Detecting subject…
+            </>
+          ) : (
+            <>✨ Auto Crop (Tap to Smart Crop)</>
+          )}
+        </button>
+
         {/* Aspect ratio selector */}
         <div
           style={{
