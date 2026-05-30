@@ -162,7 +162,7 @@ export default async function handler(req: any, res: any) {
     const cleaned = rawText
       .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim();
 
-    const parsed = safeJsonParse(cleaned, null);
+    const parsed = safeJsonParse<any>(cleaned, null);
     if (!parsed || typeof parsed !== 'object') throw new Error('Non-JSON response from Gemini');
 
     const clamp = (v: any, min: number, max: number, def: number): number => {
@@ -189,8 +189,8 @@ export default async function handler(req: any, res: any) {
       blacks:       clamp(parsed.blacks,      -100, 100,   0),
     };
 
-    const genreDetected = typeof parsed.detected_genre === 'string'
-      ? parsed.detected_genre.toUpperCase().replace(/[^A-Z_]/g, '').slice(0, 30)
+    const genreDetected = typeof (parsed as any).detected_genre === 'string'
+      ? (parsed as any).detected_genre.toUpperCase().replace(/[^A-Z_]/g, '').slice(0, 30)
       : FALLBACK_GENRE;
 
     console.info('[AI_ENHANCE] Success', { genreDetected, modelUsed });
