@@ -444,6 +444,10 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         style={isCropping ? {
           position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none',
         } : {
+          // position:absolute + centering so clipPath aligns perfectly with the processed image
+          position: 'absolute',
+          top: '50%', left: '50%',
+          transform: 'translate(-50%, -50%)',
           maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
           opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.3s',
           pointerEvents: 'none',
@@ -461,7 +465,10 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
             alt=""
             draggable={false}
             style={{
+              // Same absolute centering as the original image so clipPath divider aligns
               position: 'absolute',
+              top: '50%', left: '50%',
+              transform: 'translate(-50%, -50%)',
               maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
               clipPath: `inset(0 0 0 ${sliderPos * 100}%)`,
               pointerEvents: 'none',

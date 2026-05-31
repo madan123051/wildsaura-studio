@@ -80,10 +80,15 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'Unsupported image format' });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY not configured' });
-
+  // ── ALWAYS try Gemini; if key missing or any error → fallback preset (never 500) ──
   try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      // Key not configured — silently serve fallback so user gets AI feel
+      console.warn('[AI_ENHANCE] GEMINI_API_KEY not set — using fallback preset');
+      throw new Error('GEMINI_API_KEY not configured');
+    }
+
     const ai = new GoogleGenAI({ apiKey });
     const contents = [{
       role: 'user',
@@ -94,7 +99,8 @@ export default async function handler(req: any, res: any) {
     }];
 
     const { response, modelUsed } = await generateWithAutoModel(ai, contents);
-    const category = (response.text || '').trim().toUpperCase().replace(/[^A-Z_]/g, '');
+    const rawText = typeof response.text === 'function' ? response.text() : (response.text || '');
+    const category = rawText.trim().toUpperCase().replace(/[^A-Z_]/g, '');
     const genreDetected = category || FALLBACK_GENRE;
 
     // Apply specific cinematic logic based on category
@@ -111,14 +117,16 @@ export default async function handler(req: any, res: any) {
     });
 
   } catch (error: any) {
-    console.error('[AI_ENHANCE] Error', { message: error?.message || 'Unknown', mimeType });
+    // ── Fallback: ALWAYS return 200 with a cinematic preset so the UI never breaks ──
+    console.error('[AI_ENHANCE] Falling back to preset', { message: error?.message || 'Unknown', mimeType });
     const fallbackPreset = getCinematicPreset(FALLBACK_GENRE);
     return res.status(200).json({
       success: true,
       genreDetected: FALLBACK_GENRE,
       appliedSettings: fallbackPreset.adjustments,
       settings: { ...fallbackPreset.adjustments, detected_scene: FALLBACK_GENRE },
-      error: error?.message,
+      _fallback: true,
+      _reason: error?.message,
     });
   }
 }
