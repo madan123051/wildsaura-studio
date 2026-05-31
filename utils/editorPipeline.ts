@@ -139,24 +139,31 @@ export function renderEditedCanvas(
 
 function applyLUT(
   imageData: ImageData,
-  lutData: Uint8Array,
+  lutData: Float32Array | Uint8Array,
   size: number,
   intensity: number,
 ): void {
   const data = imageData.data;
   const i100 = intensity / 100;
 
+  // BUILT_IN_LUTS are baked as Float32Array with normalized 0–1 values.
+  // Uint8Array LUTs (e.g. from raw .cube uploads) use 0–255.
+  // Multiply by 255 when the data is normalized so blending math is correct.
+  const scale = lutData instanceof Float32Array ? 255 : 1;
+
   for (let i = 0; i < data.length; i += 4) {
-    const r = Math.round((data[i] / 255) * (size - 1));
+    const r = Math.round((data[i]     / 255) * (size - 1));
     const g = Math.round((data[i + 1] / 255) * (size - 1));
     const b = Math.round((data[i + 2] / 255) * (size - 1));
 
-    const idx = (r * size * size + g * size + b) * 3;
-    const lutR = lutData[idx];
-    const lutG = lutData[idx + 1];
-    const lutB = lutData[idx + 2];
+    // Index order must match bakePresetToLUT in lutData.ts which stores [B][G][R].
+    // Previous code used [R][G][B] causing R/B channel swap in the 3-D lookup.
+    const idx = (b * size * size + g * size + r) * 3;
+    const lutR = lutData[idx]     * scale;
+    const lutG = lutData[idx + 1] * scale;
+    const lutB = lutData[idx + 2] * scale;
 
-    data[i] = Math.round(data[i] * (1 - i100) + lutR * i100);
+    data[i]     = Math.round(data[i]     * (1 - i100) + lutR * i100);
     data[i + 1] = Math.round(data[i + 1] * (1 - i100) + lutG * i100);
     data[i + 2] = Math.round(data[i + 2] * (1 - i100) + lutB * i100);
   }
