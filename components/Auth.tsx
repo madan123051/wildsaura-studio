@@ -71,16 +71,12 @@ export default function Auth({ onSkip }: AuthProps) {
       textAlign: 'center' as const,
       marginBottom: '32px',
     },
-    logoIcon: {
-      width: '56px',
-      height: '56px',
-      borderRadius: '16px',
-      background: 'linear-gradient(135deg, #6366f1, #a855f7)',
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
+    logoImg: {
+      width: '72px',
+      height: '72px',
+      borderRadius: '20px',
+      objectFit: 'cover' as const,
       marginBottom: '12px',
-      fontSize: '28px',
     },
     logoText: {
       fontSize: '24px',
@@ -237,7 +233,11 @@ export default function Auth({ onSkip }: AuthProps) {
       <div style={styles.card}>
         {/* Logo */}
         <div style={styles.logoContainer}>
-          <div style={styles.logoIcon}>🌿</div>
+          <img
+            src="../assets/logo-icon.png"
+            alt="WildSaura"
+            style={styles.logoImg}
+          />
           <h1 style={styles.logoText}>WildSaura Studio</h1>
           <div style={styles.logoSub}>Professional Image Processing</div>
         </div>
