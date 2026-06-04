@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import logoIcon from '../assets/logo-icon.png';
 
 interface AuthProps {
   onSkip: () => void;
@@ -234,7 +235,7 @@ export default function Auth({ onSkip }: AuthProps) {
         {/* Logo */}
         <div style={styles.logoContainer}>
           <img
-            src="../assets/logo-icon.png"
+            src={logoIcon}
             alt="WildSaura"
             style={styles.logoImg}
           />
