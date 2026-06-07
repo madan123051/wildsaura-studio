@@ -28,50 +28,123 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   const cropFrameRef = useRef<HTMLDivElement>(null);
   const cropImgRef = useRef<HTMLImageElement>(null);
 
+  // ── Performance: direct DOM refs for zero-React-overhead slider ──
+  const processedImgRef = useRef<HTMLImageElement>(null);
+  const dividerLineRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<HTMLDivElement>(null);
+  /** Cached bounding rect of the displayed image — avoids layout reads in hot path */
+  const imgRectCacheRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
+
   const [imageLoaded, setImageLoaded] = useState(false);
   const [cropView, setCropView] = useState({ scale: 1, panX: 0, panY: 0 });
 
-  /* ── Before/After slider state ── */
-  const [sliderPos, setSliderPos] = useState(0.5); // 0..1
+  /* ── Before/After slider — React state only used for initial render & post-drag sync ── */
+  const [sliderPos, setSliderPos] = useState(0.5);
   const sliderDragging = useRef(false);
   const sliderPosRef = useRef(0.5);
 
   const isCropping = cropState?.isActive === true;
   const hasProcessed = processedUrl !== null;
 
-  // Keep ref in sync for native listeners
+  // Keep ref in sync with React state (for non-drag reads)
   useEffect(() => { sliderPosRef.current = sliderPos; }, [sliderPos]);
+
+  /* ── Cache the displayed image bounding rect ── */
+  const updateImgRectCache = useCallback(() => {
+    const c = containerRef.current;
+    const img = imgRef.current;
+    if (!c || !img || !img.naturalWidth) { imgRectCacheRef.current = null; return; }
+    const cr = c.getBoundingClientRect();
+    const imgAR = img.naturalWidth / img.naturalHeight;
+    const cAR = cr.width / cr.height;
+    let w: number, h: number;
+    if (imgAR > cAR) { w = cr.width; h = cr.width / imgAR; }
+    else { h = cr.height; w = cr.height * imgAR; }
+    imgRectCacheRef.current = {
+      left: (cr.width - w) / 2,
+      top: (cr.height - h) / 2,
+      width: w,
+      height: h,
+    };
+  }, []);
+
+  /**
+   * Direct DOM slider update — bypasses React reconciliation entirely.
+   * Called on every pointermove/touchmove for true 60fps smoothness.
+   * React state is only synced at drag-end via setSliderPos().
+   */
+  const updateSliderDOM = useCallback((pos: number) => {
+    sliderPosRef.current = pos;
+    // Clip the two images
+    if (imgRef.current) {
+      imgRef.current.style.clipPath = `inset(0 ${(1 - pos) * 100}% 0 0)`;
+    }
+    if (processedImgRef.current) {
+      processedImgRef.current.style.clipPath = `inset(0 0 0 ${pos * 100}%)`;
+    }
+    // Move divider line + handle
+    const ir = imgRectCacheRef.current;
+    if (!ir) return;
+    const lineX = ir.left + ir.width * pos;
+    if (dividerLineRef.current) {
+      dividerLineRef.current.style.left = `${lineX - 1}px`;
+      dividerLineRef.current.style.top = `${ir.top}px`;
+      dividerLineRef.current.style.height = `${ir.height}px`;
+    }
+    if (handleRef.current) {
+      handleRef.current.style.left = `${lineX - 18}px`;
+      handleRef.current.style.top = `${ir.top + ir.height / 2 - 18}px`;
+    }
+  }, []);
 
   /* ── Image load handling (robust with cache detection) ── */
   const prevUrlRef = useRef(originalUrl);
   const handleImageLoad = useCallback(() => {
     setImageLoaded(true);
-  }, []);
+    requestAnimationFrame(() => updateImgRectCache());
+  }, [updateImgRectCache]);
 
   useEffect(() => {
-    // Only reset imageLoaded when the URL actually changes (different file)
     if (prevUrlRef.current !== originalUrl) {
       prevUrlRef.current = originalUrl;
       setImageLoaded(false);
+      imgRectCacheRef.current = null;
     }
 
-    // Check if image is already cached / complete in browser
     const checkCache = () => {
       const img = imgRef.current;
       if (img && img.complete && img.naturalWidth > 0) {
         setImageLoaded(true);
+        updateImgRectCache();
       }
     };
 
-    // Check immediately, next frame, and after a short delay for safety
     checkCache();
     const raf = requestAnimationFrame(checkCache);
     const t1 = setTimeout(checkCache, 50);
     const t2 = setTimeout(checkCache, 200);
     return () => { cancelAnimationFrame(raf); clearTimeout(t1); clearTimeout(t2); };
-  }, [originalUrl]);
+  }, [originalUrl, updateImgRectCache]);
 
-  /* ── Frame geometry helper ── */
+  /* ── Keep imgRectCache fresh on container resize ── */
+  useEffect(() => {
+    if (!imageLoaded) return;
+    const ro = new ResizeObserver(() => {
+      updateImgRectCache();
+      updateSliderDOM(sliderPosRef.current);
+    });
+    if (containerRef.current) ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [imageLoaded, updateImgRectCache, updateSliderDOM]);
+
+  /* ── Initialize / re-init slider DOM when processed image appears ── */
+  useEffect(() => {
+    if (!imageLoaded || !hasProcessed || isCropping) return;
+    updateImgRectCache();
+    requestAnimationFrame(() => updateSliderDOM(sliderPosRef.current));
+  }, [processedUrl, imageLoaded, hasProcessed, isCropping, updateImgRectCache, updateSliderDOM]);
+
+  /* ── Frame geometry helper (crop mode only) ── */
   const getFrameInfo = useCallback(() => {
     const c = containerRef.current;
     const img = imgRef.current;
@@ -104,21 +177,12 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     if (!onCropChange) return;
     const f = getFrameInfo();
     if (!f) return;
-
-    // Total size of the image at current scale
     const scaledW = f.iW * s;
     const scaledH = f.iH * s;
-
-    // Normalized width/height of the crop frame relative to the scaled image
     const vw = f.fW / scaledW;
     const vh = f.fH / scaledH;
-
-    // Calculate normalized X and Y
-    // px/py are offsets from the center of the image
-    // (scaledW - f.fW) / 2 is the offset to align the left edge of the frame with the left edge of the image
     const rx = ((scaledW - f.fW) / 2 - px) / scaledW;
     const ry = ((scaledH - f.fH) / 2 - py) / scaledH;
-
     onCropChange({
       x: Math.max(0, Math.min(1 - vw, rx)),
       y: Math.max(0, Math.min(1 - vh, ry)),
@@ -131,11 +195,10 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   const fnRef = useRef({ clampPan, emitCropRect, getFrameInfo });
   useEffect(() => { fnRef.current = { clampPan, emitCropRect, getFrameInfo }; });
 
-  /* ── Reset view on crop mode / aspect change (keep EditPanel's rect) ── */
+  /* ── Reset view on crop mode / aspect change ── */
   useEffect(() => {
     if (isCropping) {
       setCropView({ scale: 1, panX: 0, panY: 0 });
-      // Emit the correct centered rect based on frame geometry (don't reset to 0,0,1,1)
       requestAnimationFrame(() => {
         fnRef.current.emitCropRect(1, 0, 0);
       });
@@ -148,22 +211,11 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
   useEffect(() => { cropViewRef.current = cropView; }, [cropView]);
 
   /* ── Native crop gesture listeners (pinch + pan + wheel) ── */
-  /*
-   * IMPORTANT: Touch listeners are on the CONTAINER, not the crop frame.
-   * When a user does a 2-finger pinch, the second finger often lands on
-   * the dark overlay (a sibling of the crop frame). Events from the
-   * overlay bubble to the container but NOT to the crop frame.
-   * By listening on the container we catch all touches regardless of
-   * which child element they start on.
-   *
-   * Mouse/wheel listeners stay on the crop frame for cursor styling.
-   */
   useEffect(() => {
     const container = containerRef.current;
     const el = cropFrameRef.current;
     if (!container || !isCropping || !imageLoaded) return;
 
-    // Initialize from current React state so re-attaching keeps position
     const cv = cropViewRef.current;
     const g = {
       type: null as 'pan' | 'pinch' | null,
@@ -189,7 +241,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       fnRef.current.emitCropRect(g.scale, g.panX, g.panY);
     };
 
-    /* Helper: initialize pinch state from current touches */
     const initPinch = (e: TouchEvent) => {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -201,7 +252,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       g.sMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
     };
 
-    /* Touch — on CONTAINER for full coverage */
     const onTS = (e: TouchEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -218,10 +268,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       e.preventDefault();
       e.stopPropagation();
 
-      /* Auto-upgrade pan → pinch when second finger appears mid-gesture.
-         This catches the case where the second finger started on a sibling
-         element (dark overlay) whose touchstart didn't fire on the container
-         directly, but touchmove still reports all active touches. */
       if (e.touches.length >= 2 && g.type !== 'pinch') {
         initPinch(e);
         return;
@@ -261,10 +307,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       }
     };
 
-    /* Prevent Safari native gesture (pinch-to-zoom page) */
     const preventGesture = (e: Event) => { e.preventDefault(); };
 
-    /* Mouse — on crop frame for cursor */
     const onMD = (e: MouseEvent) => {
       e.preventDefault();
       g.mouseDown = true;
@@ -286,7 +330,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       if (g.mouseDown) { g.mouseDown = false; if (el) el.style.cursor = 'grab'; commit(); }
     };
 
-    /* Wheel — on container */
     const onW = (e: WheelEvent) => {
       e.preventDefault();
       const ns = Math.max(1, Math.min(5, g.scale - e.deltaY * 0.003));
@@ -296,13 +339,11 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       commit();
     };
 
-    /* Attach — touch on container, mouse/wheel on crop frame */
     container.addEventListener('touchstart', onTS, { passive: false });
     container.addEventListener('touchmove', onTM, { passive: false });
     container.addEventListener('touchend', onTE, { passive: false });
     container.addEventListener('touchcancel', onTE, { passive: false });
     container.addEventListener('wheel', onW, { passive: false });
-    // Safari gesture prevention
     container.addEventListener('gesturestart', preventGesture, { passive: false } as any);
     container.addEventListener('gesturechange', preventGesture, { passive: false } as any);
 
@@ -328,12 +369,12 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
     };
   }, [isCropping, imageLoaded]);
 
-  /* ── Before/After slider — ONLY activate near divider line ── */
+  /* ── Before/After slider ── */
   useEffect(() => {
     const c = containerRef.current;
     if (!c || isCropping || !hasProcessed || !imageLoaded) return;
 
-    const THRESHOLD = 40; // px from divider to activate drag
+    const THRESHOLD = 44;
 
     const getPos = (clientX: number): number => {
       const rect = c.getBoundingClientRect();
@@ -346,39 +387,48 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       return Math.abs(clientX - dividerX) <= THRESHOLD;
     };
 
-    /* Touch: only start if single finger near divider */
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
       if (!isNearDivider(e.touches[0].clientX)) return;
       e.preventDefault();
       sliderDragging.current = true;
-      setSliderPos(getPos(e.touches[0].clientX));
+      updateSliderDOM(getPos(e.touches[0].clientX));
     };
 
     const onTouchMove = (e: TouchEvent) => {
       if (!sliderDragging.current) return;
-      // Cancel if second finger appears (user wants to pinch-zoom)
       if (e.touches.length >= 2) { sliderDragging.current = false; return; }
       e.preventDefault();
-      setSliderPos(getPos(e.touches[0].clientX));
+      // Direct DOM — zero React overhead, true 60fps
+      updateSliderDOM(getPos(e.touches[0].clientX));
     };
 
-    const onTouchEnd = () => { sliderDragging.current = false; };
+    const onTouchEnd = () => {
+      if (sliderDragging.current) {
+        sliderDragging.current = false;
+        setSliderPos(sliderPosRef.current); // sync React state once on release
+      }
+    };
 
-    /* Mouse: only start if near divider */
     const onMouseDown = (e: MouseEvent) => {
       if (!isNearDivider(e.clientX)) return;
       e.preventDefault();
       sliderDragging.current = true;
-      setSliderPos(getPos(e.clientX));
+      updateSliderDOM(getPos(e.clientX));
     };
 
     const onMouseMove = (e: MouseEvent) => {
       if (!sliderDragging.current) return;
-      setSliderPos(getPos(e.clientX));
+      // Direct DOM — zero React overhead, true 60fps
+      updateSliderDOM(getPos(e.clientX));
     };
 
-    const onMouseUp = () => { sliderDragging.current = false; };
+    const onMouseUp = () => {
+      if (sliderDragging.current) {
+        sliderDragging.current = false;
+        setSliderPos(sliderPosRef.current); // sync React state once on release
+      }
+    };
 
     c.addEventListener('touchstart', onTouchStart, { passive: false });
     c.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -397,12 +447,12 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
-  }, [isCropping, hasProcessed, imageLoaded]);
+  }, [isCropping, hasProcessed, imageLoaded, updateSliderDOM]);
 
-  /* ── Computed frame info for render ── */
+  /* ── Computed frame info for crop render ── */
   const fi = imageLoaded && isCropping ? getFrameInfo() : null;
 
-  /* ── Compute image display rect for slider clipping ── */
+  /* ── Image rect for initial divider/handle render (React render only) ── */
   const getImgRect = useCallback(() => {
     const c = containerRef.current;
     const img = imgRef.current;
@@ -434,7 +484,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         cursor: isCropping ? 'default' : 'default',
       }}
     >
-      {/* ── Dimension-source image (visible when NOT cropping) ── */}
+      {/* BEFORE image */}
       <img
         ref={imgRef}
         src={originalUrl}
@@ -444,48 +494,47 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         style={isCropping ? {
           position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none',
         } : {
-          // position:absolute + centering so clipPath aligns perfectly with the processed image
           position: 'absolute',
           top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%)',
+          transform: 'translate(-50%, -50%) translateZ(0)',
           maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
           opacity: imageLoaded ? 1 : 0, transition: 'opacity 0.3s',
           pointerEvents: 'none',
+          willChange: hasProcessed ? 'clip-path' : 'auto',
           ...(hasProcessed ? {
             clipPath: `inset(0 ${(1 - sliderPos) * 100}% 0 0)`,
           } : {}),
         }}
       />
 
-      {/* ── Processed overlay (clipped from right of slider) ── */}
-      {!isCropping && processedUrl && imageLoaded && (() => {
-        return (
-          <img
-            src={processedUrl}
-            alt=""
-            draggable={false}
-            style={{
-              // Same absolute centering as the original image so clipPath divider aligns
-              position: 'absolute',
-              top: '50%', left: '50%',
-              transform: 'translate(-50%, -50%)',
-              maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
-              clipPath: `inset(0 0 0 ${sliderPos * 100}%)`,
-              pointerEvents: 'none',
-            }}
-          />
-        );
-      })()}
+      {/* AFTER image */}
+      {!isCropping && processedUrl && imageLoaded && (
+        <img
+          ref={processedImgRef}
+          src={processedUrl}
+          alt=""
+          draggable={false}
+          style={{
+            position: 'absolute',
+            top: '50%', left: '50%',
+            transform: 'translate(-50%, -50%) translateZ(0)',
+            maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+            clipPath: `inset(0 0 0 ${sliderPos * 100}%)`,
+            pointerEvents: 'none',
+            willChange: 'clip-path',
+          }}
+        />
+      )}
 
-      {/* ── Slider divider line + handle ── */}
+      {/* Slider divider line + handle */}
       {!isCropping && hasProcessed && imageLoaded && (() => {
         const ir = getImgRect();
         if (!ir) return null;
         const lineX = ir.left + ir.width * sliderPos;
         return (
           <>
-            {/* Vertical line */}
             <div
+              ref={dividerLineRef}
               style={{
                 position: 'absolute',
                 left: lineX - 1,
@@ -498,8 +547,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
                 pointerEvents: 'none',
               }}
             />
-            {/* Drag handle (circle with arrows) */}
             <div
+              ref={handleRef}
               style={{
                 position: 'absolute',
                 left: lineX - 18,
@@ -522,7 +571,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
               </svg>
             </div>
 
-            {/* Before / After labels */}
             <div style={{
               position: 'absolute',
               left: ir.left + 8,
@@ -554,10 +602,8 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
       {/* CROP MODE */}
       {isCropping && fi && imageLoaded && (
         <>
-          {/* Dark background — pointerEvents:none so touches pass through to container */}
           <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 1, pointerEvents: 'none' }} />
 
-          {/* Crop frame */}
           <div
             ref={cropFrameRef}
             style={{
@@ -573,7 +619,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
               touchAction: 'none',
             }}
           >
-            {/* Image inside frame */}
             <img
               ref={cropImgRef}
               src={originalUrl}
@@ -589,7 +634,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
               }}
             />
 
-            {/* Rule of thirds */}
             <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2 }}>
               {[33.33, 66.66].map(p => (
                 <React.Fragment key={p}>
@@ -599,12 +643,11 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
               ))}
             </div>
 
-            {/* Corner L-marks */}
-            {(['tl', 'tr', 'bl', 'br'] as const).map(c => {
-              const t = c[0] === 't';
-              const l = c[1] === 'l';
+            {(['tl', 'tr', 'bl', 'br'] as const).map(corner => {
+              const t = corner[0] === 't';
+              const l = corner[1] === 'l';
               return (
-                <React.Fragment key={c}>
+                <React.Fragment key={corner}>
                   <div style={{
                     position: 'absolute',
                     ...(t ? { top: -1 } : { bottom: -1 }),
@@ -622,7 +665,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
             })}
           </div>
 
-          {/* Zoom badge */}
           {cropView.scale > 1.01 && (
             <div style={{
               position: 'absolute', top: 12, right: 12,
@@ -635,7 +677,6 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
             </div>
           )}
 
-          {/* Hint */}
           <div style={{
             position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
             padding: '6px 16px', borderRadius: 20,
@@ -649,7 +690,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         </>
       )}
 
-      {/* ── No comparison message ── */}
+      {/* No comparison message */}
       {!isCropping && !hasProcessed && imageLoaded && (
         <div style={{
           position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
@@ -663,7 +704,7 @@ const ImagePreview: React.FC<ImagePreviewProps> = ({
         </div>
       )}
 
-      {/* ── File name badge ── */}
+      {/* File name badge */}
       {!isCropping && imageLoaded && (
         <div style={{
           position: 'absolute', bottom: 12, right: 12,
