@@ -9,6 +9,7 @@ import {
   updateProfile,
 } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
+import { isIdentityVerified, redirectToIdentityVerify } from '../lib/identityGuard';
 
 interface AuthContextType {
   user: User | null;
@@ -26,7 +27,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      // ── Identity verification check ────────────────────────────────
+      // Real (non-anonymous) logged-in users must have completed identity
+      // verification before accessing WildSaura Studio.
+      // Unverified users are redirected to identity.wildsaura.com/verify
+      // which sends them back here after they submit their documents.
+      if (firebaseUser && !firebaseUser.isAnonymous) {
+        const verified = await isIdentityVerified(firebaseUser.uid);
+        if (!verified) {
+          redirectToIdentityVerify();
+          return; // Page will navigate away — skip state updates
+        }
+      }
+
       setUser(firebaseUser);
       setLoading(false);
     });
