@@ -495,8 +495,12 @@ export default function UserProfileDashboard({
 
   const handleVerifyClick = () => {
     if (verified === false) {
-      const returnUrl = encodeURIComponent(window.location.href);
-      window.open(`${IDENTITY_VERIFY_URL}/verify?return=${returnUrl}`, '_blank');
+      // Build return URL pointing back to studio with ?verified=true
+      const returnUrl = encodeURIComponent(
+        window.location.origin + window.location.pathname + '?verified=true'
+      );
+      // Same-tab redirect so identity.wildsaura.com can return us back
+      window.location.href = `${IDENTITY_VERIFY_URL}/verify?return=${returnUrl}`;
     }
   };
 

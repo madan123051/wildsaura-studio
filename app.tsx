@@ -339,6 +339,18 @@ const WildSauraApp: React.FC = () => {
     }
   }, [user]);
 
+  // ── Handle return from identity.wildsaura.com after verification ─────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('verified') === 'true') {
+      // Clean URL so refresh doesn't re-trigger
+      window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+      // Open profile in settings tab — user sees the green verified badge
+      setShowProfile(true);
+      setProfileTab('settings');
+    }
+  }, []);
+
   // ── Generate preview for selected file ──
   const generatePreview = useCallback(async (file: FileItem) => {
     const genId = ++previewGenRef.current; // track generation
