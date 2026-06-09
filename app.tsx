@@ -29,6 +29,8 @@ import {
   renderEditedCanvas,
 } from './utils/editorPipeline';
 import './styles.css';
+import UserMenu from './components/UserMenu';
+import UserProfileDashboard from './components/UserProfileDashboard';
 
 declare const JSZip: any;
 
@@ -91,102 +93,6 @@ const resizeImageForApi = async (
   ctx.drawImage(img, 0, 0, w, h);
   const dataUrl = cvs.toDataURL('image/jpeg', 0.88);
   return { base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' };
-};
-
-// ─── User Menu Component ──────────────────────────────────
-
-const UserMenu: React.FC<{
-  user: any;
-  onSignOut: () => void;
-  onNavigate: (tab: string) => void;
-}> = ({ user, onSignOut, onNavigate }) => {
-  const [open, setOpen] = useState(false);
-
-  if (!user) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Guest</span>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ position: 'relative' }}>
-      <button
-        onClick={() => setOpen(!open)}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          padding: '4px 10px', borderRadius: 8,
-          background: open ? 'rgba(255,255,255,0.06)' : 'transparent',
-          border: '1px solid transparent',
-          cursor: 'pointer', transition: 'all 0.15s',
-          color: 'var(--text-secondary)',
-        }}
-        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
-        onMouseLeave={e => { if (!open) e.currentTarget.style.background = 'transparent'; }}
-      >
-        {user.photoURL ? (
-          <img src={user.photoURL} alt="" style={{ width: 22, height: 22, borderRadius: '50%' }} />
-        ) : (
-          <div style={{
-            width: 22, height: 22, borderRadius: '50%',
-            background: 'linear-gradient(135deg, var(--accent), var(--accent-secondary))',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 10, fontWeight: 700, color: '#fff',
-          }}>
-            {(user.displayName || user.email || '?')[0].toUpperCase()}
-          </div>
-        )}
-        <span style={{ fontSize: 11, fontWeight: 500, maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {user.displayName || user.email?.split('@')[0] || 'User'}
-        </span>
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-
-      {open && (
-        <>
-          <div
-            style={{ position: 'fixed', inset: 0, zIndex: 199 }}
-            onClick={() => setOpen(false)}
-          />
-          <div style={{
-            position: 'absolute', top: '100%', right: 0, marginTop: 4,
-            width: 180, padding: 4, borderRadius: 10,
-            background: 'var(--bg-panel)',
-            border: '1px solid var(--border)',
-            boxShadow: '0 8px 30px rgba(0,0,0,0.5)',
-            zIndex: 200,
-          }}>
-            <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-primary)' }}>
-                {user.displayName || 'User'}
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {user.email}
-              </div>
-            </div>
-            {[
-              { label: '📊 Dashboard', action: () => { onNavigate('catalog'); setOpen(false); } },
-              { label: '🚪 Sign Out', action: () => { onSignOut(); setOpen(false); } },
-            ].map((item, i) => (
-              <button key={i} onClick={item.action} style={{
-                display: 'block', width: '100%', padding: '8px 10px', borderRadius: 6,
-                background: 'transparent', border: 'none',
-                fontSize: 11, color: 'var(--text-secondary)',
-                cursor: 'pointer', textAlign: 'left',
-                transition: 'background 0.15s',
-              }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              >{item.label}</button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
 };
 
 // ─── Mobile File Drawer ───────────────────────────────────
@@ -254,6 +160,8 @@ const WildSauraApp: React.FC = () => {
   const [showAuth, setShowAuth] = useState(true);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [showProfile, setShowProfile] = useState(false);
+  const [profileTab, setProfileTab] = useState<'history' | 'luts' | 'settings'>('history');
 
   // ── File State ──
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -1087,7 +995,16 @@ const WildSauraApp: React.FC = () => {
         </nav>
 
         {/* Right: User menu */}
-        <UserMenu user={user} onSignOut={signOut} onNavigate={(tab) => setActiveTab(tab as any)} />
+        <UserMenu
+          user={user}
+          onSignOut={signOut}
+          onNavigate={(tab) => {
+            if (tab === 'profile') { setShowProfile(true); setProfileTab('history'); }
+            else if (tab === 'profile-luts') { setShowProfile(true); setProfileTab('luts'); }
+            else if (tab === 'profile-settings') { setShowProfile(true); setProfileTab('settings'); }
+            else setActiveTab(tab as any);
+          }}
+        />
       </header>
 
       {/* ═══════════════ MAIN CONTENT ═══════════════ */}
@@ -1434,6 +1351,17 @@ const WildSauraApp: React.FC = () => {
             </div>
           )}
         </>
+      )}
+      {/* ═══════════════ USER PROFILE DASHBOARD ═══════════════ */}
+      {showProfile && user && (
+        <UserProfileDashboard
+          user={user}
+          onClose={() => setShowProfile(false)}
+          onLoadLut={(lut) => {
+            addCustomLut({ id: lut.id, name: lut.name, data: lut.data, size: lut.size });
+            setShowProfile(false);
+          }}
+        />
       )}
     </div>
   );
