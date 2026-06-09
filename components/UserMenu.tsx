@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User } from 'firebase/auth';
-import { LogOut, History, Settings, User as UserIcon } from 'lucide-react';
+import { LogOut, History, Settings, User as UserIcon, Layers } from 'lucide-react';
 
 interface UserMenuProps {
   user: User | null;
@@ -76,7 +76,7 @@ export default function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps)
       top: 'calc(100% + 8px)',
       right: 0,
       width: '240px',
-      background: 'rgba(22,33,62,0.95)',
+      background: 'rgba(22,33,62,0.97)',
       backdropFilter: 'blur(20px)',
       WebkitBackdropFilter: 'blur(20px)',
       border: '1px solid rgba(255,255,255,0.08)',
@@ -141,6 +141,8 @@ export default function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps)
     },
   };
 
+  const menuItemHover = { background: 'rgba(255,255,255,0.05)' };
+
   return (
     <div style={styles.wrapper} ref={menuRef}>
       <div style={styles.avatar} onClick={() => setOpen(!open)}>
@@ -158,30 +160,55 @@ export default function UserMenu({ user, onSignOut, onNavigate }: UserMenuProps)
             <p style={styles.userEmail}>{user.email}</p>
           </div>
 
+          {/* My Profile */}
+          <button
+            style={styles.menuItem}
+            onClick={() => { onNavigate('profile'); setOpen(false); }}
+            onMouseEnter={(e) => Object.assign(e.currentTarget.style, menuItemHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+          >
+            <UserIcon size={16} />
+            My Profile
+          </button>
+
+          {/* Edit History */}
           <button
             style={styles.menuItem}
             onClick={() => { onNavigate('catalog'); setOpen(false); }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+            onMouseEnter={(e) => Object.assign(e.currentTarget.style, menuItemHover)}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
           >
             <History size={16} />
-            My History
+            Edit History
           </button>
 
+          {/* My LUTs */}
+          <button
+            style={styles.menuItem}
+            onClick={() => { onNavigate('profile-luts'); setOpen(false); }}
+            onMouseEnter={(e) => Object.assign(e.currentTarget.style, menuItemHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+          >
+            <Layers size={16} />
+            My LUTs
+          </button>
+
+          {/* Settings */}
           <button
             style={styles.menuItem}
             onClick={() => { onNavigate('settings'); setOpen(false); }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+            onMouseEnter={(e) => Object.assign(e.currentTarget.style, menuItemHover)}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
           >
             <Settings size={16} />
             Settings
           </button>
 
+          {/* Sign Out */}
           <button
             style={styles.signOutItem}
             onClick={() => { onSignOut(); setOpen(false); }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.05)')}
+            onMouseEnter={(e) => Object.assign(e.currentTarget.style, menuItemHover)}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
           >
             <LogOut size={16} />
