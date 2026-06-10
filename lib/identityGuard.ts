@@ -15,9 +15,16 @@ export const IDENTITY_VERIFY_URL = 'https://identity.wildsaura.com';
 
 /**
  * Check Firestore users/{uid} for verification status.
- * Returns true if verified, false otherwise.
+ * Returns true if the user is verified OR has a pending review (already submitted).
+ * Returns false only for not_started or rejected status.
  * Fails open (returns true) on network/permission errors to avoid
  * blocking users due to transient Firestore issues.
+ *
+ * Status flow: not_started → pending → verified | rejected
+ * - not_started: user has never submitted → redirect to identity
+ * - pending:     user submitted, waiting for admin review → allow through
+ * - verified:    admin approved → allow through
+ * - rejected:    admin rejected → redirect to identity to resubmit
  */
 export async function isIdentityVerified(uid: string): Promise<boolean> {
   try {
@@ -26,8 +33,11 @@ export async function isIdentityVerified(uid: string): Promise<boolean> {
     const snap = await getDoc(doc(firestore, 'users', uid));
     if (!snap.exists()) return false;
     const d = snap.data();
+    const status = d?.verificationStatus;
+    // Allow verified users and pending users (already submitted, awaiting review)
     return (
-      d?.verificationStatus === 'verified' ||
+      status === 'verified' ||
+      status === 'pending' ||
       d?.verified === true ||
       d?.isVerified === true
     );
