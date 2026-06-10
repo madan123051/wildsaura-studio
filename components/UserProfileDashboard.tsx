@@ -495,12 +495,32 @@ export default function UserProfileDashboard({
 
   const handleVerifyClick = () => {
     if (verified === false) {
-      // Build return URL pointing back to studio with ?verified=true
-      const returnUrl = encodeURIComponent(
-        window.location.origin + window.location.pathname + '?verified=true'
+      // Open identity in a POPUP — studio page never leaves.
+      // Poll popup.closed every 2s; when user closes it re-check Firestore.
+      const popup = window.open(
+        `${IDENTITY_VERIFY_URL}`,
+        'wildsaura_identity',
+        'width=520,height=700,left=200,top=100,resizable=yes,scrollbars=yes'
       );
-      // Same-tab redirect so identity.wildsaura.com can return us back
-      window.location.href = `${IDENTITY_VERIFY_URL}/verify?return=${returnUrl}`;
+      if (!popup) {
+        // Popup blocked — fall back to new tab
+        window.open(`${IDENTITY_VERIFY_URL}`, '_blank');
+        return;
+      }
+      const poll = setInterval(async () => {
+        if (popup.closed) {
+          clearInterval(poll);
+          // Re-check Firestore directly — no dependency on identity redirecting back
+          if (user) {
+            const nowVerified = await isIdentityVerified(user.uid);
+            if (nowVerified) {
+              setVerified(true);
+              // Switch to settings tab so user sees the green badge
+              setActiveTab('settings');
+            }
+          }
+        }
+      }, 2000);
     }
   };
 
