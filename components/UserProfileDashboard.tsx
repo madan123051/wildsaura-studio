@@ -516,7 +516,7 @@ export default function UserProfileDashboard({
             if (nowVerified) {
               setVerified(true);
               // Switch to settings tab so user sees the green badge
-              setActiveTab('settings');
+              setTab('settings');
             }
           }
         }
