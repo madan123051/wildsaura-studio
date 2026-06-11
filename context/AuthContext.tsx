@@ -27,20 +27,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      // ── Identity verification check ────────────────────────────────
-      // Real (non-anonymous) logged-in users must have completed identity
-      // verification before accessing WildSaura Studio.
-      // Unverified users are redirected to identity.wildsaura.com/verify
-      // which sends them back here after they submit their documents.
-      if (firebaseUser && !firebaseUser.isAnonymous) {
-        const verified = await isIdentityVerified(firebaseUser.uid);
-        if (!verified) {
-          redirectToIdentityVerify();
-          return; // Page will navigate away — skip state updates
-        }
-      }
-
+    // Only restore auth state — do NOT run identity check here.
+    // Identity check runs only on explicit sign-in actions below.
+    // This prevents users from being redirected to identity before
+    // they even see the Studio login page on a fresh page load.
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       setLoading(false);
     });
@@ -48,11 +39,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signInWithGoogle = async () => {
-    await signInWithPopup(auth, googleProvider);
+    const result = await signInWithPopup(auth, googleProvider);
+    // Identity check only after explicit login
+    if (result.user && !result.user.isAnonymous) {
+      const verified = await isIdentityVerified(result.user.uid);
+      if (!verified) {
+        redirectToIdentityVerify();
+        return;
+      }
+    }
   };
 
   const signInWithEmail = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password);
+    const result = await signInWithEmailAndPassword(auth, email, password);
+    // Identity check only after explicit login
+    if (result.user && !result.user.isAnonymous) {
+      const verified = await isIdentityVerified(result.user.uid);
+      if (!verified) {
+        redirectToIdentityVerify();
+        return;
+      }
+    }
   };
 
   const signUpWithEmail = async (
@@ -62,6 +69,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   ) => {
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(credential.user, { displayName });
+    // New sign-ups always need identity verification
+    redirectToIdentityVerify();
   };
 
   const signOut = async () => {
